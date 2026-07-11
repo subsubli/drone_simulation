@@ -142,3 +142,24 @@ If you wish, please cite our [IROS 2021 paper](https://arxiv.org/abs/2103.02142)
 
 - On Ubuntu, with an NVIDIA card, if you receive a "Failed to create and OpenGL context" message, launch `nvidia-settings` and under "PRIME Profiles" select "NVIDIA (Performance Mode)", reboot and try again.
 -->
+#/
+
+정리
+Miniconda 설치 (~/miniconda3), conda init zsh로 셸 연동
+drones conda 환경 생성 (Python 3.10)
+pip3 install -e . 중 pybullet 소스 빌드가 최신 macOS SDK와 충돌 → conda-forge의 pybullet(3.2.5)로는 버전 요구사항(>=3.2.7) 미충족 → 소스를 패치(zutil.h의 낡은 fdopen 매크로 가드 수정)해서 pybullet 3.2.7 wheel을 직접 빌드/설치
+최신 setuptools(83.0.0)가 pkg_resources를 제거해 임포트 실패 → setuptools<81로 고정해 해결
+HoverAviary 환경 생성/리셋 테스트 성공
+이제 사용법
+새 터미널을 열거나 source ~/.zshrc 후:
+
+
+conda activate drones
+cd /Users/hanjakp/drone_simulation/gym_pybullet_drones/gym_pybullet_drones/examples
+
+python3 pid.py            # PID 제어 예제
+python3 downwash.py       # downwash 효과 예제
+python learn.py           # 강화학습(PPO) 학습 예제
+gui=True(기본값)로 실행하면 PyBullet GUI 창이 뜨는 예제들이니, 로컬 터미널(원격 SSH 아님)에서 실행하시면 됩니다.
+
+/#
