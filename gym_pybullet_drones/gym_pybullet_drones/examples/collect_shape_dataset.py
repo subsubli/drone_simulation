@@ -1,0 +1,95 @@
+"""Batch-collect shape_dataset.py episodes until a target number of environment steps is reached.
+
+Round-robins through `--shapes` (default: all of triangle/square/pentagon/circle), running one
+full `shape_dataset.run()` episode (one CSV file) at a time with an incrementing seed. The step
+budget is only checked *between* episodes -- an episode already in progress always finishes in
+full, so the final total can exceed `--target_steps` by up to one episode's worth of steps, but
+is never cut short mid-episode.
+
+Example
+-------
+In a terminal, run as:
+
+    $ python collect_shape_dataset.py --target_steps 200000
+    $ python collect_shape_dataset.py --target_steps 1000000 --shapes triangle square
+
+"""
+import argparse
+
+import shape_dataset as sd
+from gym_pybullet_drones.utils.enums import DroneModel, Physics
+from gym_pybullet_drones.utils.utils import str2bool
+
+DEFAULT_TARGET_STEPS = 200_000
+DEFAULT_SHAPES = list(sd.SHAPE_SIDES.keys())
+DEFAULT_SEED_START = 0
+
+
+def collect(
+        target_steps=DEFAULT_TARGET_STEPS,
+        shapes=DEFAULT_SHAPES,
+        seed_start=DEFAULT_SEED_START,
+        drone=sd.DEFAULT_DRONE,
+        physics=sd.DEFAULT_PHYSICS,
+        gui=False,
+        obstacles=sd.DEFAULT_OBSTACLES,
+        simulation_freq_hz=sd.DEFAULT_SIMULATION_FREQ_HZ,
+        control_freq_hz=sd.DEFAULT_CONTROL_FREQ_HZ,
+        radius=sd.DEFAULT_RADIUS,
+        side_jitter=sd.DEFAULT_SIDE_JITTER,
+        tilt_max_deg=sd.DEFAULT_TILT_MAX_DEG,
+        workspace_size=sd.DEFAULT_WORKSPACE_SIZE,
+        loop_period_sec=sd.DEFAULT_LOOP_PERIOD_SEC,
+        duration_sec=sd.DEFAULT_DURATION_SEC,
+        max_speed=sd.DEFAULT_MAX_SPEED,
+        max_accel=sd.DEFAULT_MAX_ACCEL,
+        output_folder=sd.DEFAULT_OUTPUT_FOLDER,
+        ):
+    steps_per_episode = int(duration_sec * control_freq_hz)
+    total_steps = 0
+    episode_idx = 0
+    per_shape_count = {shape: 0 for shape in shapes}
+
+    while total_steps < target_steps:
+        shape = shapes[episode_idx % len(shapes)]
+        seed = seed_start + episode_idx
+        print(f"[INFO] episode {episode_idx} -- shape={shape} seed={seed} "
+              f"({total_steps}/{target_steps} steps so far)")
+        sd.run(drone=drone, shape=shape, physics=physics, gui=gui, obstacles=obstacles,
+               simulation_freq_hz=simulation_freq_hz, control_freq_hz=control_freq_hz,
+               radius=radius, side_jitter=side_jitter, tilt_max_deg=tilt_max_deg,
+               workspace_size=workspace_size, loop_period_sec=loop_period_sec,
+               duration_sec=duration_sec, max_speed=max_speed, max_accel=max_accel,
+               output_folder=output_folder, seed=seed)
+        total_steps += steps_per_episode
+        per_shape_count[shape] += 1
+        episode_idx += 1
+
+    print(f"[INFO] done: {episode_idx} episodes, {total_steps} steps total (target was {target_steps})")
+    for shape, count in per_shape_count.items():
+        print(f"  {shape}: {count} episodes")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Batch-collect shape_dataset.py episodes up to a step budget')
+    parser.add_argument('--target_steps',       default=DEFAULT_TARGET_STEPS, type=int, help='Stop launching new episodes once the total steps reach this; an in-progress episode always finishes (default: 200000)', metavar='')
+    parser.add_argument('--shapes',             default=DEFAULT_SHAPES, type=str, nargs='+', help='Shapes to round-robin through (default: all)', metavar='', choices=sd.SHAPE_SIDES.keys())
+    parser.add_argument('--seed_start',         default=DEFAULT_SEED_START, type=int, help='Seed of the first episode; increments by 1 each episode (default: 0)', metavar='')
+    parser.add_argument('--drone',              default=sd.DEFAULT_DRONE,     type=DroneModel,    help='Drone model (default: CF2X)', metavar='', choices=DroneModel)
+    parser.add_argument('--physics',            default=sd.DEFAULT_PHYSICS,   type=Physics,       help='Physics updates (default: PYB_DRAG)', metavar='', choices=Physics)
+    parser.add_argument('--gui',                default=False,             type=str2bool,         help='Whether to use PyBullet GUI (default: False)', metavar='')
+    parser.add_argument('--obstacles',          default=sd.DEFAULT_OBSTACLES, type=str2bool,      help='Whether to add obstacles (default: False)', metavar='')
+    parser.add_argument('--simulation_freq_hz', default=sd.DEFAULT_SIMULATION_FREQ_HZ, type=int,  help='Simulation frequency in Hz (default: 1000)', metavar='')
+    parser.add_argument('--control_freq_hz',    default=sd.DEFAULT_CONTROL_FREQ_HZ,    type=int,  help='Control frequency in Hz (default: 100)', metavar='')
+    parser.add_argument('--radius',             default=sd.DEFAULT_RADIUS,    type=float,         help='Base circumradius in meters, before jitter (default: 2.2)', metavar='')
+    parser.add_argument('--side_jitter',        default=sd.DEFAULT_SIDE_JITTER, type=float,       help='Fractional per-side length variation (default: 0.3)', metavar='')
+    parser.add_argument('--tilt_max_deg',       default=sd.DEFAULT_TILT_MAX_DEG, type=float,      help='Max random tilt in degrees (default: 30)', metavar='')
+    parser.add_argument('--workspace_size',     default=sd.DEFAULT_WORKSPACE_SIZE, type=float,    help='Cubic workspace side length in meters (default: 5.0)', metavar='')
+    parser.add_argument('--loop_period_sec',    default=sd.DEFAULT_LOOP_PERIOD_SEC, type=float,   help='Seconds per lap (default: 10)', metavar='')
+    parser.add_argument('--duration_sec',       default=sd.DEFAULT_DURATION_SEC, type=int,        help='Seconds per episode (default: 30)', metavar='')
+    parser.add_argument('--max_speed',          default=sd.DEFAULT_MAX_SPEED, type=float,         help='Max target speed in m/s (default: 2.0)', metavar='')
+    parser.add_argument('--max_accel',          default=sd.DEFAULT_MAX_ACCEL, type=float,         help='Max target acceleration in m/s^2 (default: 2.0)', metavar='')
+    parser.add_argument('--output_folder',      default=sd.DEFAULT_OUTPUT_FOLDER, type=str,       help='Folder where to save datasets (default: "results")', metavar='')
+    ARGS = parser.parse_args()
+
+    collect(**vars(ARGS))
