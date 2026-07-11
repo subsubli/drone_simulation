@@ -39,7 +39,13 @@ with columns:
     roll, pitch, yaw, ang_vel_x, ang_vel_y, ang_vel_z,
     action_vx, action_vy, action_vz, action_yaw_rate,
     target_pos_x, target_pos_y, target_pos_z,
+    reward, done,
     shape, center_x, center_y, center_z, start_yaw_deg, tilt_deg, tilt_axis_deg
+
+`reward` is the negative squared tracking error (-(pos - target_pos)^2), consistent with
+the time+error^2 loss used to pick `--speed_margin`; `done` is True only on an episode's
+last row (each CSV file is one episode, so this just marks that boundary explicitly for
+later use once multiple episodes' CSVs get concatenated).
 
 """
 import os
@@ -71,10 +77,13 @@ DEFAULT_SIDE_JITTER = 0.3
 DEFAULT_TILT_MAX_DEG = 30
 DEFAULT_WORKSPACE_SIZE = 5.0
 DEFAULT_FLOOR_CLEARANCE = 0.3
-DEFAULT_LOOP_PERIOD_SEC = 10
-DEFAULT_DURATION_SEC = 30
+DEFAULT_PATH_RESOLUTION = 3000  # waypoints per lap; purely spatial now, decoupled from any duration
+DEFAULT_N_LAPS = 3
+DEFAULT_DURATION_SEC = None  # None = auto: n_laps * the time-optimal lap time
 DEFAULT_MAX_SPEED = 2.0
 DEFAULT_MAX_ACCEL = 2.0
+DEFAULT_SPEED_MARGIN = 0.7  # fraction of max_speed/max_accel the *planned* profile targets
+DEFAULT_LOOKAHEAD_DIST = 0.3  # meters
 DEFAULT_OUTPUT_FOLDER = 'results'
 DEFAULT_SEED = None
 
@@ -107,10 +116,17 @@ def generate_local_shape_waypoints(shape, num_wp, radius, side_jitter, rng):
         (num_wp, 3)-shaped array of waypoints, Z always 0.
 
     """
-    n_sides = SHAPE_SIDES[shape]
     if shape == 'circle':
+        #### Use the full sample resolution as the vertex count, not SHAPE_SIDES['circle'] --
+        #### building 72 real corners and then arc-length-resampling to num_wp points would
+        #### concentrate each corner's full turning angle onto a single resampled point
+        #### (curvature looks like a near-zero-radius kink there instead of the smooth,
+        #### constant curvature a real circle has), badly confusing any curvature-based
+        #### speed limit downstream (e.g. compute_time_optimal_speed_profile).
+        n_sides = num_wp
         vertex_radii = np.full(n_sides, radius)
     else:
+        n_sides = SHAPE_SIDES[shape]
         vertex_radii = radius * (1 + rng.uniform(-side_jitter, side_jitter, size=n_sides))
     angles = (np.arange(n_sides + 1) / n_sides) * 2 * np.pi
     r_closed = np.append(vertex_radii, vertex_radii[0])
@@ -136,6 +152,66 @@ def place_waypoints(local_pts, start_yaw, tilt_deg, tilt_axis_deg, center):
     axis = np.array([np.cos(tilt_axis_deg), np.sin(tilt_axis_deg), 0])
     pts = Rotation.from_rotvec(axis * tilt_deg).apply(pts)
     return pts + np.asarray(center)
+
+
+def compute_time_optimal_speed_profile(path, max_speed, max_accel, n_smoothing_laps=3):
+    """Computes the fastest speed achievable at each point of a closed path under speed/accel limits.
+
+    This is a simplified time-optimal path parameterization (as used in robot/CNC motion
+    planning): straight stretches ramp up to `max_speed`; corners are approached only as fast
+    as still allows braking to a safe cornering speed within `max_accel`, and accelerated back
+    out of just as fast. Unlike guessing a lap duration and deriving speed from it, this instead
+    *starts* from the physical limits and derives the fastest consistent lap time -- there's no
+    faster way around this path without exceeding `max_speed` or `max_accel`.
+
+    Steps: (1) a per-point corner speed limit from the discretized turning angle, treating the
+    local curvature as `angle / avg_segment_length` and capping speed via `v = sqrt(a * radius)`
+    (the standard centripetal-acceleration bound); (2) a forward/backward accel-limited sweep
+    along arc length (`v[i]^2 <= v[i-1]^2 + 2*a*ds`), run for several laps since the path is a
+    closed loop, so a slowdown required near one corner correctly propagates backward into the
+    preceding straight to leave room to brake.
+
+    Parameters
+    ----------
+    path : ndarray
+        (N, 3)-shaped array of positions describing the closed path.
+    max_speed : float
+        Maximum allowed speed, in m/s.
+    max_accel : float
+        Maximum allowed (tangential and centripetal) acceleration, in m/s^2.
+    n_smoothing_laps : int, optional
+        Number of forward/backward sweeps around the closed loop.
+
+    Returns
+    -------
+    ndarray
+        (N,)-shaped array, the time-optimal speed (m/s) at each path point.
+    float
+        Total time (s) to complete one lap at this speed profile.
+
+    """
+    n = len(path)
+    seg_vec = np.roll(path, -1, axis=0) - path
+    ds = np.maximum(np.linalg.norm(seg_vec, axis=1), 1e-9)
+    seg_dir = seg_vec / ds[:, None]
+    incoming_dir = np.roll(seg_dir, 1, axis=0)  # direction of the segment arriving at each point
+    cos_theta = np.clip(np.sum(incoming_dir * seg_dir, axis=1), -1, 1)
+    theta = np.arccos(cos_theta)  # turning angle at each point; 0 = straight through
+
+    ds_avg = (ds + np.roll(ds, 1)) / 2
+    radius_of_curvature = np.where(theta > 1e-6, ds_avg / np.maximum(theta, 1e-6), np.inf)
+    v = np.minimum(max_speed, np.sqrt(max_accel * radius_of_curvature))
+
+    for _ in range(n_smoothing_laps):
+        for i in range(n):  # forward: limited by how fast we could have accelerated since i-1
+            v[i] = min(v[i], np.sqrt(v[i - 1] ** 2 + 2 * max_accel * ds[i - 1]))
+        for i in range(n - 1, -1, -1):  # backward: limited by how much braking room remains before i+1
+            nxt = (i + 1) % n
+            v[i] = min(v[i], np.sqrt(v[nxt] ** 2 + 2 * max_accel * ds[i]))
+
+    dt = ds / ((v + np.roll(v, -1)) / 2)
+    loop_time = float(dt.sum())
+    return v, loop_time
 
 
 class PurePursuitTracker:
@@ -250,10 +326,13 @@ def run(
         side_jitter=DEFAULT_SIDE_JITTER,
         tilt_max_deg=DEFAULT_TILT_MAX_DEG,
         workspace_size=DEFAULT_WORKSPACE_SIZE,
-        loop_period_sec=DEFAULT_LOOP_PERIOD_SEC,
+        path_resolution=DEFAULT_PATH_RESOLUTION,
+        n_laps=DEFAULT_N_LAPS,
         duration_sec=DEFAULT_DURATION_SEC,
         max_speed=DEFAULT_MAX_SPEED,
         max_accel=DEFAULT_MAX_ACCEL,
+        speed_margin=DEFAULT_SPEED_MARGIN,
+        lookahead_dist=DEFAULT_LOOKAHEAD_DIST,
         output_folder=DEFAULT_OUTPUT_FOLDER,
         seed=DEFAULT_SEED,
         ):
@@ -262,20 +341,27 @@ def run(
     #### Sample this episode's placement and build the path ####
     ep = sample_episode_params(shape, radius, side_jitter, tilt_max_deg, workspace_size, DEFAULT_FLOOR_CLEARANCE, rng)
 
-    NUM_WP = int(control_freq_hz * loop_period_sec)
-    local_pts = generate_local_shape_waypoints(shape, NUM_WP, radius, side_jitter, rng)
+    local_pts = generate_local_shape_waypoints(shape, path_resolution, radius, side_jitter, rng)
     TARGET_POS = place_waypoints(local_pts,
                                   start_yaw=np.radians(ep['start_yaw_deg']),
                                   tilt_deg=np.radians(ep['tilt_deg']),
                                   tilt_axis_deg=np.radians(ep['tilt_axis_deg']),
                                   center=ep['center'])
-    #### Nominal speed at each path point, from its intended arc-length spacing,
-    #### capped at max_speed. Actual cornering slowdown is handled online by the
-    #### tracker's accel limit, since only it knows the drone's real position.
-    nominal_speed = np.linalg.norm(np.roll(TARGET_POS, -1, axis=0) - TARGET_POS, axis=1) * control_freq_hz
-    SPEED_PROFILE = np.minimum(nominal_speed, max_speed)
-    LOOKAHEAD_STEPS = max(1, int(control_freq_hz * 0.3))  # aim ~0.3s ahead of the closest path point
-    tracker = PurePursuitTracker(TARGET_POS, SPEED_PROFILE, LOOKAHEAD_STEPS, max_speed, max_accel, control_freq_hz)
+    #### Time-optimal speed at each path point given max_speed/max_accel (see docstring) --
+    #### not a guessed lap duration, so lap_time is the fastest this shape can be flown.
+    #### The profile itself targets speed_margin * (max_speed, max_accel), not the full 100%:
+    #### a profile planned at the bare kinematic limit (e.g. cornering right at max_accel)
+    #### leaves the real tracker zero headroom to correct for its own lag/discretization/
+    #### drift-correction, which empirically causes *larger* tracking error, not less -- the
+    #### margin trades a slightly longer lap for a profile that's actually trackable.
+    SPEED_PROFILE, lap_time = compute_time_optimal_speed_profile(TARGET_POS, max_speed * speed_margin, max_accel * speed_margin)
+    if duration_sec is None:
+        duration_sec = n_laps * lap_time
+    print(f"[INFO] time-optimal lap time: {lap_time:.2f}s -- {n_laps} laps -> duration_sec={duration_sec:.2f}s")
+
+    perimeter = np.sum(np.linalg.norm(np.roll(TARGET_POS, -1, axis=0) - TARGET_POS, axis=1))
+    lookahead_steps = max(1, round(lookahead_dist / (perimeter / path_resolution)))
+    tracker = PurePursuitTracker(TARGET_POS, SPEED_PROFILE, lookahead_steps, max_speed, max_accel, control_freq_hz)
 
     INIT_XYZ = np.array([TARGET_POS[0]])
     INIT_RPY = np.array([[0, 0, 0]])
@@ -308,6 +394,7 @@ def run(
         'ang_vel_x', 'ang_vel_y', 'ang_vel_z',
         'action_vx', 'action_vy', 'action_vz', 'action_yaw_rate',
         'target_pos_x', 'target_pos_y', 'target_pos_z',
+        'reward', 'done',
         'shape', 'center_x', 'center_y', 'center_z', 'start_yaw_deg', 'tilt_deg', 'tilt_axis_deg',
     ])
     episode_meta = [shape, *ep['center'], ep['start_yaw_deg'], ep['tilt_deg'], ep['tilt_axis_deg']]
@@ -317,7 +404,9 @@ def run(
     START = time.time()
     total_steps = int(duration_sec * control_freq_hz)
     for i in range(total_steps):
-        obs, reward, terminated, truncated, info = env.step(action)
+        #### CtrlAviary's own reward/terminated/truncated are unused dummies (it's not
+        #### built for RL) -- ours is computed below instead, from the actual tracking error.
+        obs, _, _, _, info = env.step(action)
         state = obs[0]
 
         #### Pure velocity control: target_pos = current position, so the PID's
@@ -337,6 +426,13 @@ def run(
             target_vel=target_vel,
         )
 
+        #### reward = -(tracking error)^2, i.e. how close `pos` landed to the reference
+        #### path point pure pursuit was aiming at that step -- consistent with the
+        #### time+error^2 loss used to pick speed_margin (see compute_time_optimal_speed_profile).
+        tracking_error_sq = float(np.sum((state[0:3] - TARGET_POS[closest_idx]) ** 2))
+        step_reward = -tracking_error_sq
+        done = (i == total_steps - 1)
+
         writer.writerow([
             i, i / control_freq_hz,
             *state[0:3],
@@ -345,6 +441,7 @@ def run(
             *state[13:16],
             *target_vel, 0.0,
             *TARGET_POS[closest_idx],
+            step_reward, done,
             *episode_meta,
         ])
 
@@ -355,6 +452,7 @@ def run(
     csv_file.close()
     env.close()
     print(f"[INFO] Dataset saved to {csv_path}")
+    return total_steps
 
 
 if __name__ == "__main__":
@@ -370,10 +468,13 @@ if __name__ == "__main__":
     parser.add_argument('--side_jitter',        default=DEFAULT_SIDE_JITTER, type=float,       help='Fractional random per-side length variation, 0=regular polygon (default: 0.3); ignored for circle', metavar='')
     parser.add_argument('--tilt_max_deg',       default=DEFAULT_TILT_MAX_DEG, type=float,      help='Max random tilt of the shape plane away from horizontal, in degrees (default: 30)', metavar='')
     parser.add_argument('--workspace_size',     default=DEFAULT_WORKSPACE_SIZE, type=float,    help='Side length in meters of the cubic workspace the shape is randomly placed within (default: 5.0)', metavar='')
-    parser.add_argument('--loop_period_sec',    default=DEFAULT_LOOP_PERIOD_SEC, type=float,   help='Time to complete one lap of the shape, in seconds (default: 10)', metavar='')
-    parser.add_argument('--duration_sec',       default=DEFAULT_DURATION_SEC, type=int,        help='Total duration of the simulation in seconds (default: 30)', metavar='')
+    parser.add_argument('--path_resolution',    default=DEFAULT_PATH_RESOLUTION, type=int,     help='Number of waypoints sampled along the path (spatial resolution, independent of duration) (default: 3000)', metavar='')
+    parser.add_argument('--n_laps',             default=DEFAULT_N_LAPS, type=float,            help='Number of laps to fly when --duration_sec is not set (default: 3)', metavar='')
+    parser.add_argument('--duration_sec',       default=DEFAULT_DURATION_SEC, type=float,      help='Total duration of the simulation in seconds (default: auto = n_laps * time-optimal lap time)', metavar='')
     parser.add_argument('--max_speed',          default=DEFAULT_MAX_SPEED, type=float,         help='Max target speed in m/s (default: 2.0)', metavar='')
-    parser.add_argument('--max_accel',          default=DEFAULT_MAX_ACCEL, type=float,         help='Max target acceleration in m/s^2, limits how fast target speed can change (e.g. at corners) (default: 2.0)', metavar='')
+    parser.add_argument('--max_accel',          default=DEFAULT_MAX_ACCEL, type=float,         help='Max target acceleration in m/s^2 -- also drives the time-optimal speed profile\'s cornering/ramp limits (default: 2.0)', metavar='')
+    parser.add_argument('--speed_margin',       default=DEFAULT_SPEED_MARGIN, type=float,      help='Fraction of max_speed/max_accel the planned profile targets, leaving headroom for real tracking error (default: 0.7)', metavar='')
+    parser.add_argument('--lookahead_dist',     default=DEFAULT_LOOKAHEAD_DIST, type=float,    help='Pure-pursuit lookahead distance in meters (default: 0.3)', metavar='')
     parser.add_argument('--output_folder',      default=DEFAULT_OUTPUT_FOLDER, type=str,       help='Folder where to save the dataset (default: "results")', metavar='')
     parser.add_argument('--seed',               default=DEFAULT_SEED,      type=int,           help='Random seed for shape/placement sampling (default: random)', metavar='')
     ARGS = parser.parse_args()

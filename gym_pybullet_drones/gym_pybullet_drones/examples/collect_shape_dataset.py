@@ -39,13 +39,15 @@ def collect(
         side_jitter=sd.DEFAULT_SIDE_JITTER,
         tilt_max_deg=sd.DEFAULT_TILT_MAX_DEG,
         workspace_size=sd.DEFAULT_WORKSPACE_SIZE,
-        loop_period_sec=sd.DEFAULT_LOOP_PERIOD_SEC,
+        path_resolution=sd.DEFAULT_PATH_RESOLUTION,
+        n_laps=sd.DEFAULT_N_LAPS,
         duration_sec=sd.DEFAULT_DURATION_SEC,
         max_speed=sd.DEFAULT_MAX_SPEED,
         max_accel=sd.DEFAULT_MAX_ACCEL,
+        speed_margin=sd.DEFAULT_SPEED_MARGIN,
+        lookahead_dist=sd.DEFAULT_LOOKAHEAD_DIST,
         output_folder=sd.DEFAULT_OUTPUT_FOLDER,
         ):
-    steps_per_episode = int(duration_sec * control_freq_hz)
     total_steps = 0
     episode_idx = 0
     per_shape_count = {shape: 0 for shape in shapes}
@@ -55,13 +57,17 @@ def collect(
         seed = seed_start + episode_idx
         print(f"[INFO] episode {episode_idx} -- shape={shape} seed={seed} "
               f"({total_steps}/{target_steps} steps so far)")
-        sd.run(drone=drone, shape=shape, physics=physics, gui=gui, obstacles=obstacles,
-               simulation_freq_hz=simulation_freq_hz, control_freq_hz=control_freq_hz,
-               radius=radius, side_jitter=side_jitter, tilt_max_deg=tilt_max_deg,
-               workspace_size=workspace_size, loop_period_sec=loop_period_sec,
-               duration_sec=duration_sec, max_speed=max_speed, max_accel=max_accel,
-               output_folder=output_folder, seed=seed)
-        total_steps += steps_per_episode
+        #### duration_sec is auto (time-optimal lap time * n_laps) unless overridden, and
+        #### differs per shape/geometry, so read back the actual step count run() used
+        #### rather than assuming a fixed steps-per-episode.
+        episode_steps = sd.run(drone=drone, shape=shape, physics=physics, gui=gui, obstacles=obstacles,
+                                simulation_freq_hz=simulation_freq_hz, control_freq_hz=control_freq_hz,
+                                radius=radius, side_jitter=side_jitter, tilt_max_deg=tilt_max_deg,
+                                workspace_size=workspace_size, path_resolution=path_resolution,
+                                n_laps=n_laps, duration_sec=duration_sec, max_speed=max_speed,
+                                max_accel=max_accel, speed_margin=speed_margin, lookahead_dist=lookahead_dist,
+                                output_folder=output_folder, seed=seed)
+        total_steps += episode_steps
         per_shape_count[shape] += 1
         episode_idx += 1
 
@@ -85,10 +91,13 @@ if __name__ == "__main__":
     parser.add_argument('--side_jitter',        default=sd.DEFAULT_SIDE_JITTER, type=float,       help='Fractional per-side length variation (default: 0.3)', metavar='')
     parser.add_argument('--tilt_max_deg',       default=sd.DEFAULT_TILT_MAX_DEG, type=float,      help='Max random tilt in degrees (default: 30)', metavar='')
     parser.add_argument('--workspace_size',     default=sd.DEFAULT_WORKSPACE_SIZE, type=float,    help='Cubic workspace side length in meters (default: 5.0)', metavar='')
-    parser.add_argument('--loop_period_sec',    default=sd.DEFAULT_LOOP_PERIOD_SEC, type=float,   help='Seconds per lap (default: 10)', metavar='')
-    parser.add_argument('--duration_sec',       default=sd.DEFAULT_DURATION_SEC, type=int,        help='Seconds per episode (default: 30)', metavar='')
+    parser.add_argument('--path_resolution',    default=sd.DEFAULT_PATH_RESOLUTION, type=int,     help='Waypoints sampled along the path (default: 3000)', metavar='')
+    parser.add_argument('--n_laps',             default=sd.DEFAULT_N_LAPS, type=float,            help='Laps per episode when --duration_sec is not set (default: 3)', metavar='')
+    parser.add_argument('--duration_sec',       default=sd.DEFAULT_DURATION_SEC, type=float,      help='Seconds per episode (default: auto = n_laps * time-optimal lap time)', metavar='')
     parser.add_argument('--max_speed',          default=sd.DEFAULT_MAX_SPEED, type=float,         help='Max target speed in m/s (default: 2.0)', metavar='')
     parser.add_argument('--max_accel',          default=sd.DEFAULT_MAX_ACCEL, type=float,         help='Max target acceleration in m/s^2 (default: 2.0)', metavar='')
+    parser.add_argument('--speed_margin',       default=sd.DEFAULT_SPEED_MARGIN, type=float,      help='Fraction of max_speed/max_accel the planned profile targets (default: 0.7)', metavar='')
+    parser.add_argument('--lookahead_dist',     default=sd.DEFAULT_LOOKAHEAD_DIST, type=float,    help='Pure-pursuit lookahead distance in meters (default: 0.3)', metavar='')
     parser.add_argument('--output_folder',      default=sd.DEFAULT_OUTPUT_FOLDER, type=str,       help='Folder where to save datasets (default: "results")', metavar='')
     ARGS = parser.parse_args()
 
