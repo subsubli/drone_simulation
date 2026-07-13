@@ -182,6 +182,11 @@ python shape_dataset.py --shape square --seed 3 --plot_path True
 # 스텝 수 목표치까지 여러 에피소드를 도형 돌아가며 자동 수집 (CSV는 --output_folder/shape_dataset/ 안에 하나씩 저장)
 python collect_shape_dataset.py --target_steps 1000000 --output_folder dataset_1M
 
+# 에피소드마다 최고 속도/가속도를 범위 안에서 랜덤으로 뽑고 싶을 때 (기본은 min==max=2.0 고정, 안 건드리면 이전과 동일)
+# CSV의 max_speed/max_accel 컬럼에 그 에피소드에 실제로 쓰인 값이 남음
+python shape_dataset.py --shape circle --max_speed_min 1.0 --max_speed_max 3.0 --max_accel_min 1.0 --max_accel_max 3.0
+python collect_shape_dataset.py --target_steps 1000000 --max_speed_min 1.0 --max_speed_max 3.0 --max_accel_min 1.0 --max_accel_max 3.0 --output_folder dataset_1M_speed_varied
+
 # 위에서 모은 개별 CSV들을 episode_id 컬럼을 붙여 하나의 CSV로 병합 (원본은 그대로 둠)
 python merge_shape_dataset.py --input_folder dataset_1M/shape_dataset --output_file dataset_1M/merged.csv
 

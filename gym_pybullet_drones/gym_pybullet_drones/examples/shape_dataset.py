@@ -40,7 +40,8 @@ with columns:
     action_vx, action_vy, action_vz, action_yaw_rate,
     target_pos_x, target_pos_y, target_pos_z,
     reward, done,
-    shape, center_x, center_y, center_z, start_yaw_deg, tilt_deg, tilt_axis_deg
+    shape, center_x, center_y, center_z, start_yaw_deg, tilt_deg, tilt_axis_deg,
+    max_speed, max_accel
 
 `reward` is the negative squared tracking error (-(pos - target_pos)^2), consistent with
 the time+error^2 loss used to pick `--speed_margin`; `done` is True only on an episode's
@@ -82,8 +83,10 @@ DEFAULT_FLOOR_CLEARANCE = 0.3
 DEFAULT_PATH_RESOLUTION = 3000  # waypoints per lap; purely spatial now, decoupled from any duration
 DEFAULT_N_LAPS = 3
 DEFAULT_DURATION_SEC = None  # None = auto: n_laps * the time-optimal lap time
-DEFAULT_MAX_SPEED = 2.0
-DEFAULT_MAX_ACCEL = 2.0
+DEFAULT_MAX_SPEED_MIN = 2.0
+DEFAULT_MAX_SPEED_MAX = 2.0  # == min by default -> no randomization unless overridden
+DEFAULT_MAX_ACCEL_MIN = 2.0
+DEFAULT_MAX_ACCEL_MAX = 2.0
 DEFAULT_SPEED_MARGIN = 0.7  # fraction of max_speed/max_accel the *planned* profile targets
 DEFAULT_LOOKAHEAD_DIST = 0.3  # meters
 DEFAULT_OUTPUT_FOLDER = 'results'
@@ -333,8 +336,10 @@ def run(
         path_resolution=DEFAULT_PATH_RESOLUTION,
         n_laps=DEFAULT_N_LAPS,
         duration_sec=DEFAULT_DURATION_SEC,
-        max_speed=DEFAULT_MAX_SPEED,
-        max_accel=DEFAULT_MAX_ACCEL,
+        max_speed_min=DEFAULT_MAX_SPEED_MIN,
+        max_speed_max=DEFAULT_MAX_SPEED_MAX,
+        max_accel_min=DEFAULT_MAX_ACCEL_MIN,
+        max_accel_max=DEFAULT_MAX_ACCEL_MAX,
         speed_margin=DEFAULT_SPEED_MARGIN,
         lookahead_dist=DEFAULT_LOOKAHEAD_DIST,
         output_folder=DEFAULT_OUTPUT_FOLDER,
@@ -343,6 +348,17 @@ def run(
         plot_path=DEFAULT_PLOT_PATH,
         ):
     rng = np.random.default_rng(seed)
+
+    #### Each episode gets its own max_speed/max_accel, drawn once here -- with
+    #### *_min == *_max (the default) this reduces to the old fixed-value behavior, and
+    #### skips the rng draw entirely so a fixed-range run still consumes `rng` in exactly
+    #### the same order as before, keeping old seeds reproducible (see sample_episode_params
+    #### and generate_local_shape_waypoints below, which are the only other rng consumers).
+    #### Widening the range gives the collected dataset a mix of speed regimes instead
+    #### of every episode being flown at the exact same limits, for a more general
+    #### (and more RL-useful) policy target.
+    max_speed = max_speed_min if max_speed_min == max_speed_max else rng.uniform(max_speed_min, max_speed_max)
+    max_accel = max_accel_min if max_accel_min == max_accel_max else rng.uniform(max_accel_min, max_accel_max)
 
     #### Sample this episode's placement and build the path ####
     ep = sample_episode_params(shape, radius, side_jitter, tilt_max_deg, workspace_size, DEFAULT_FLOOR_CLEARANCE, rng)
@@ -363,7 +379,8 @@ def run(
     SPEED_PROFILE, lap_time = compute_time_optimal_speed_profile(TARGET_POS, max_speed * speed_margin, max_accel * speed_margin)
     if duration_sec is None:
         duration_sec = n_laps * lap_time
-    print(f"[INFO] time-optimal lap time: {lap_time:.2f}s -- {n_laps} laps -> duration_sec={duration_sec:.2f}s")
+    print(f"[INFO] max_speed={max_speed:.2f}m/s max_accel={max_accel:.2f}m/s^2 -- "
+          f"time-optimal lap time: {lap_time:.2f}s -- {n_laps} laps -> duration_sec={duration_sec:.2f}s")
 
     perimeter = np.sum(np.linalg.norm(np.roll(TARGET_POS, -1, axis=0) - TARGET_POS, axis=1))
     lookahead_steps = max(1, round(lookahead_dist / (perimeter / path_resolution)))
@@ -406,8 +423,9 @@ def run(
         'target_pos_x', 'target_pos_y', 'target_pos_z',
         'reward', 'done',
         'shape', 'center_x', 'center_y', 'center_z', 'start_yaw_deg', 'tilt_deg', 'tilt_axis_deg',
+        'max_speed', 'max_accel',
     ])
-    episode_meta = [shape, *ep['center'], ep['start_yaw_deg'], ep['tilt_deg'], ep['tilt_axis_deg']]
+    episode_meta = [shape, *ep['center'], ep['start_yaw_deg'], ep['tilt_deg'], ep['tilt_axis_deg'], max_speed, max_accel]
     actual_pos = [] if plot_path else None
 
     #### Run the simulation ######################################
@@ -515,8 +533,10 @@ if __name__ == "__main__":
     parser.add_argument('--path_resolution',    default=DEFAULT_PATH_RESOLUTION, type=int,     help='Number of waypoints sampled along the path (spatial resolution, independent of duration) (default: 3000)', metavar='')
     parser.add_argument('--n_laps',             default=DEFAULT_N_LAPS, type=float,            help='Number of laps to fly when --duration_sec is not set (default: 3)', metavar='')
     parser.add_argument('--duration_sec',       default=DEFAULT_DURATION_SEC, type=float,      help='Total duration of the simulation in seconds (default: auto = n_laps * time-optimal lap time)', metavar='')
-    parser.add_argument('--max_speed',          default=DEFAULT_MAX_SPEED, type=float,         help='Max target speed in m/s (default: 2.0)', metavar='')
-    parser.add_argument('--max_accel',          default=DEFAULT_MAX_ACCEL, type=float,         help='Max target acceleration in m/s^2 -- also drives the time-optimal speed profile\'s cornering/ramp limits (default: 2.0)', metavar='')
+    parser.add_argument('--max_speed_min',      default=DEFAULT_MAX_SPEED_MIN, type=float,     help='Lower bound (m/s) episode max speed is drawn from -- set equal to --max_speed_max for a fixed value (default: 2.0)', metavar='')
+    parser.add_argument('--max_speed_max',      default=DEFAULT_MAX_SPEED_MAX, type=float,     help='Upper bound (m/s) episode max speed is drawn from (default: 2.0)', metavar='')
+    parser.add_argument('--max_accel_min',      default=DEFAULT_MAX_ACCEL_MIN, type=float,     help='Lower bound (m/s^2) episode max acceleration is drawn from -- also drives the time-optimal speed profile\'s cornering/ramp limits (default: 2.0)', metavar='')
+    parser.add_argument('--max_accel_max',      default=DEFAULT_MAX_ACCEL_MAX, type=float,     help='Upper bound (m/s^2) episode max acceleration is drawn from (default: 2.0)', metavar='')
     parser.add_argument('--speed_margin',       default=DEFAULT_SPEED_MARGIN, type=float,      help='Fraction of max_speed/max_accel the planned profile targets, leaving headroom for real tracking error (default: 0.7)', metavar='')
     parser.add_argument('--lookahead_dist',     default=DEFAULT_LOOKAHEAD_DIST, type=float,    help='Pure-pursuit lookahead distance in meters (default: 0.3)', metavar='')
     parser.add_argument('--output_folder',      default=DEFAULT_OUTPUT_FOLDER, type=str,       help='Folder where to save the dataset (default: "results")', metavar='')
