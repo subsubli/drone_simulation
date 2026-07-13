@@ -187,6 +187,35 @@ python collect_shape_dataset.py --target_steps 1000000 --output_folder dataset_1
 python shape_dataset.py --shape circle --max_speed_min 1.0 --max_speed_max 3.0 --max_accel_min 1.0 --max_accel_max 3.0
 python collect_shape_dataset.py --target_steps 1000000 --max_speed_min 1.0 --max_speed_max 3.0 --max_accel_min 1.0 --max_accel_max 3.0 --output_folder dataset_1M_speed_varied
 
+지금 쓸 수 있는 시각화/그래프 정리
+아래 명령어들 실행 전에 먼저 이 두 줄부터 (순서대로 각각 실행):
+
+conda activate drones
+cd /Users/hanjakp/drone_simulation/gym_pybullet_drones/gym_pybullet_drones/examples
+
+1) PyBullet 3D GUI (실시간 비행) -- --gui True (기본값)
+   드론이 실제로 도형을 그리며 나는 걸 3D 창으로 실시간으로 봄. 새 코드 없이 바로 됨.
+     python shape_dataset.py --shape triangle --gui True
+   주의: GUI 인스턴스를 동시에 여러 개 띄우면(병렬 실행) 이 macOS/PyBullet 조합에서 가끔
+   충돌해서 죽는 걸 확인했음(pybullet.error) -- 여러 도형을 보려면 하나씩 순서대로 실행할 것.
+
+2) 위치/속도/자세 시간축 그래프 -- --plot True
+   gym_pybullet_drones의 기존 Logger 클래스를 재사용(새로 만든 게 아님). x/y/z, roll/pitch/yaw,
+   각속도, RPM 등을 시간에 대해 축별로 나눠 그리는 2D 그래프(10x2 서브플롯). pid.py/learn.py 등
+   다른 예제 스크립트들도 원래부터 이 Logger.plot()을 자동으로 씀.
+     python shape_dataset.py --shape triangle --plot True
+
+3) 목표 경로 vs 실제 비행 경로 3D 비교 그래프 -- --plot_path True (새로 추가)
+   기존 리포지토리에는 없던 기능이라 새로 작성함: TARGET_POS(목표 경로, 검은 점선)와 실제
+   드론이 지나간 위치(파란 실선)를 matplotlib 3D로 겹쳐서 보여줌. 세 축 스케일을 실제 비율대로
+   맞춰놔서(안 그러면 평평한 도형도 세워진 것처럼 보이는 축 왜곡이 생김) 도형이 실제 모양대로 보임.
+     python shape_dataset.py --shape triangle --plot_path True
+
+--plot과 --plot_path는 같이 켜도 되고, 배치 수집(collect_shape_dataset.py) 때는 창이 뜨면 안 되니
+둘 다 기본값 False. 이미 모은 CSV의 에피소드를 다시 보고 싶으면 CSV를 열 필요 없이 그 파일명의
+shape/seed만 그대로 넣어서 재실행하면 (다른 옵션이 그때와 같다면) 동일한 경로/기울기/배치가
+재생성됨 -- 물리 시뮬레이션도 결정론적이라 실제 비행 경로까지 거의 그대로 재현됨.
+
 # 위에서 모은 개별 CSV들을 episode_id 컬럼을 붙여 하나의 CSV로 병합 (원본은 그대로 둠)
 python merge_shape_dataset.py --input_folder dataset_1M/shape_dataset --output_file dataset_1M/merged.csv
 

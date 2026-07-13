@@ -49,6 +49,7 @@ def collect(
         speed_margin=sd.DEFAULT_SPEED_MARGIN,
         lookahead_dist=sd.DEFAULT_LOOKAHEAD_DIST,
         output_folder=sd.DEFAULT_OUTPUT_FOLDER,
+        att_d_gain_scale=sd.DEFAULT_ATT_D_GAIN_SCALE,
         ):
     total_steps = 0
     episode_idx = 0
@@ -70,7 +71,8 @@ def collect(
                                 max_speed_min=max_speed_min, max_speed_max=max_speed_max,
                                 max_accel_min=max_accel_min, max_accel_max=max_accel_max,
                                 speed_margin=speed_margin, lookahead_dist=lookahead_dist,
-                                output_folder=output_folder, seed=seed)
+                                output_folder=output_folder, seed=seed,
+                                att_d_gain_scale=att_d_gain_scale)
         total_steps += episode_steps
         per_shape_count[shape] += 1
         episode_idx += 1
@@ -105,6 +107,7 @@ if __name__ == "__main__":
     parser.add_argument('--speed_margin',       default=sd.DEFAULT_SPEED_MARGIN, type=float,      help='Fraction of max_speed/max_accel the planned profile targets (default: 0.7)', metavar='')
     parser.add_argument('--lookahead_dist',     default=sd.DEFAULT_LOOKAHEAD_DIST, type=float,    help='Pure-pursuit lookahead distance in meters (default: 0.3)', metavar='')
     parser.add_argument('--output_folder',      default=sd.DEFAULT_OUTPUT_FOLDER, type=str,       help='Folder where to save datasets (default: "results")', metavar='')
+    parser.add_argument('--att_d_gain_scale',   default=sd.DEFAULT_ATT_D_GAIN_SCALE, type=float,  help='Scales DSLPIDControl attitude D-gain for every episode (default: 1.0 = unmodified)', metavar='')
     ARGS = parser.parse_args()
 
     collect(**vars(ARGS))

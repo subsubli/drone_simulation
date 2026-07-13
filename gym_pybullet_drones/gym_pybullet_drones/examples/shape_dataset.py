@@ -93,6 +93,7 @@ DEFAULT_OUTPUT_FOLDER = 'results'
 DEFAULT_SEED = None
 DEFAULT_PLOT = False
 DEFAULT_PLOT_PATH = False
+DEFAULT_ATT_D_GAIN_SCALE = 1.0  # 1.0 = DSLPIDControl's unmodified (real-hardware-tuned) gains
 
 
 def generate_local_shape_waypoints(shape, num_wp, radius, side_jitter, rng):
@@ -346,6 +347,7 @@ def run(
         seed=DEFAULT_SEED,
         plot=DEFAULT_PLOT,
         plot_path=DEFAULT_PLOT_PATH,
+        att_d_gain_scale=DEFAULT_ATT_D_GAIN_SCALE,
         ):
     rng = np.random.default_rng(seed)
 
@@ -401,6 +403,13 @@ def run(
                       obstacles=obstacles,
                       )
     ctrl = DSLPIDControl(drone_model=drone)
+    #### DSLPIDControl's default attitude D-gain is tuned/validated for normal position-target
+    #### control (see cf.py), not this pipeline's "target_pos=cur_pos, driven only via target_vel"
+    #### mode -- which shows a sustained ~1Hz +/-11deg roll/pitch oscillation under the defaults.
+    #### Scaling it down (att_d_gain_scale < 1) is an experiment to damp that out in *this*
+    #### velocity-only mode; only applied to this instance, so DSLPIDControl's real-hardware
+    #### defaults (used elsewhere in the repo) are untouched.
+    ctrl.D_COEFF_TOR = ctrl.D_COEFF_TOR * att_d_gain_scale
     #### Reuses gym_pybullet_drones' own Logger (position/velocity/attitude vs. time,
     #### one subplot per axis) -- off by default so batch collection never pops a window.
     logger = Logger(logging_freq_hz=control_freq_hz, num_drones=1,
@@ -543,6 +552,7 @@ if __name__ == "__main__":
     parser.add_argument('--seed',               default=DEFAULT_SEED,      type=int,           help='Random seed for shape/placement sampling (default: random)', metavar='')
     parser.add_argument('--plot',               default=DEFAULT_PLOT,      type=str2bool,      help='Show a position/velocity/attitude vs. time plot (via Logger) after the run (default: False)', metavar='')
     parser.add_argument('--plot_path',          default=DEFAULT_PLOT_PATH, type=str2bool,      help='Show a 3D plot comparing the target path to the actual flown path after the run (default: False)', metavar='')
+    parser.add_argument('--att_d_gain_scale',   default=DEFAULT_ATT_D_GAIN_SCALE, type=float,   help='Scales DSLPIDControl.D_COEFF_TOR (attitude D-gain) for this run only, e.g. 0.5 to damp roll/pitch chatter under velocity-only control (default: 1.0 = unmodified)', metavar='')
     ARGS = parser.parse_args()
 
     run(**vars(ARGS))
