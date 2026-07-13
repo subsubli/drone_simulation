@@ -162,4 +162,27 @@ python3 downwash.py       # downwash 효과 예제
 python learn.py           # 강화학습(PPO) 학습 예제
 gui=True(기본값)로 실행하면 PyBullet GUI 창이 뜨는 예제들이니, 로컬 터미널(원격 SSH 아님)에서 실행하시면 됩니다.
 
+도형 경로 오프라인-RL 데이터셋 (shape_dataset.py)
+드론이 랜덤한 삼각형/사각형/오각형/원 경로를 그리며 (state, action) 데이터를 CSV로 저장하는 스크립트.
+
+conda activate drones
+cd /Users/hanjakp/drone_simulation/gym_pybullet_drones/gym_pybullet_drones/examples
+
+# 에피소드 하나 실행 (GUI로 실시간 비행 확인, --seed로 재현 가능)
+python shape_dataset.py --shape triangle --seed 0
+
+# 실행 후 그래프도 같이 보고 싶으면
+python shape_dataset.py --shape triangle --seed 0 --plot True       # 위치/속도/자세 시간축 그래프 (Logger)
+python shape_dataset.py --shape triangle --seed 0 --plot_path True  # 목표 경로 vs 실제 비행 경로 3D 비교 그래프
+
+# 이미 모은 CSV를 다시 보고 싶을 때: 파일명(예: triangle-seed0-...csv)의 shape/seed만 그대로 넣으면
+# 같은 경로/기울기/배치가 재생성됨 (CSV를 직접 열 필요 없음)
+python shape_dataset.py --shape square --seed 3 --plot_path True
+
+# 스텝 수 목표치까지 여러 에피소드를 도형 돌아가며 자동 수집 (CSV는 --output_folder/shape_dataset/ 안에 하나씩 저장)
+python collect_shape_dataset.py --target_steps 1000000 --output_folder dataset_1M
+
+# 위에서 모은 개별 CSV들을 episode_id 컬럼을 붙여 하나의 CSV로 병합 (원본은 그대로 둠)
+python merge_shape_dataset.py --input_folder dataset_1M/shape_dataset --output_file dataset_1M/merged.csv
+
 /#
