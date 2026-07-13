@@ -55,11 +55,13 @@ import argparse
 from datetime import datetime
 
 import numpy as np
+import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation
 
 from gym_pybullet_drones.utils.enums import DroneModel, Physics
 from gym_pybullet_drones.envs.CtrlAviary import CtrlAviary
 from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
+from gym_pybullet_drones.utils.Logger import Logger
 from gym_pybullet_drones.utils.utils import sync, str2bool
 
 #### Regular polygons approximating each shape, by number of sides ##########
@@ -86,6 +88,8 @@ DEFAULT_SPEED_MARGIN = 0.7  # fraction of max_speed/max_accel the *planned* prof
 DEFAULT_LOOKAHEAD_DIST = 0.3  # meters
 DEFAULT_OUTPUT_FOLDER = 'results'
 DEFAULT_SEED = None
+DEFAULT_PLOT = False
+DEFAULT_PLOT_PATH = False
 
 
 def generate_local_shape_waypoints(shape, num_wp, radius, side_jitter, rng):
@@ -335,6 +339,8 @@ def run(
         lookahead_dist=DEFAULT_LOOKAHEAD_DIST,
         output_folder=DEFAULT_OUTPUT_FOLDER,
         seed=DEFAULT_SEED,
+        plot=DEFAULT_PLOT,
+        plot_path=DEFAULT_PLOT_PATH,
         ):
     rng = np.random.default_rng(seed)
 
@@ -378,6 +384,10 @@ def run(
                       obstacles=obstacles,
                       )
     ctrl = DSLPIDControl(drone_model=drone)
+    #### Reuses gym_pybullet_drones' own Logger (position/velocity/attitude vs. time,
+    #### one subplot per axis) -- off by default so batch collection never pops a window.
+    logger = Logger(logging_freq_hz=control_freq_hz, num_drones=1,
+                     duration_sec=int(np.ceil(duration_sec)), output_folder=output_folder) if plot else None
 
     #### Prepare the output CSV #################################
     dataset_dir = os.path.join(output_folder, 'shape_dataset')
@@ -398,6 +408,7 @@ def run(
         'shape', 'center_x', 'center_y', 'center_z', 'start_yaw_deg', 'tilt_deg', 'tilt_axis_deg',
     ])
     episode_meta = [shape, *ep['center'], ep['start_yaw_deg'], ep['tilt_deg'], ep['tilt_axis_deg']]
+    actual_pos = [] if plot_path else None
 
     #### Run the simulation ######################################
     action = np.zeros((1, 4))
@@ -444,6 +455,11 @@ def run(
             step_reward, done,
             *episode_meta,
         ])
+        if logger is not None:
+            logger.log(drone=0, timestamp=i / control_freq_hz, state=state,
+                       control=np.hstack([TARGET_POS[closest_idx], target_vel, np.zeros(6)]))
+        if actual_pos is not None:
+            actual_pos.append(state[0:3].copy())
 
         env.render()
         if gui:
@@ -452,6 +468,34 @@ def run(
     csv_file.close()
     env.close()
     print(f"[INFO] Dataset saved to {csv_path}")
+    if logger is not None:
+        logger.plot()
+    if actual_pos is not None:
+        actual_pos = np.array(actual_pos)
+        fig = plt.figure()
+        ax = fig.add_subplot(projection='3d')
+        ax.plot(TARGET_POS[:, 0], TARGET_POS[:, 1], TARGET_POS[:, 2],
+                'k--', linewidth=1, label='target path')
+        ax.plot(actual_pos[:, 0], actual_pos[:, 1], actual_pos[:, 2],
+                'b-', linewidth=1.5, label='actual (flown) path')
+        #### matplotlib's 3D axes don't share a common scale by default -- each of X/Y/Z is
+        #### independently stretched to fill the plot box, so a mostly-flat shape (small
+        #### tilt_deg, so its Z range is much smaller than X/Y) ends up looking stood on
+        #### edge. Force a common scale by giving all three axes the same range.
+        all_pts = np.vstack([TARGET_POS, actual_pos])
+        mins, maxs = all_pts.min(axis=0), all_pts.max(axis=0)
+        mid = (mins + maxs) / 2
+        half_range = max((maxs - mins).max(), 1e-6) / 2
+        ax.set_xlim(mid[0] - half_range, mid[0] + half_range)
+        ax.set_ylim(mid[1] - half_range, mid[1] + half_range)
+        ax.set_zlim(mid[2] - half_range, mid[2] + half_range)
+        ax.set_box_aspect((1, 1, 1))
+        ax.set_xlabel('X (m)')
+        ax.set_ylabel('Y (m)')
+        ax.set_zlabel('Z (m)')
+        ax.set_title(f'{shape} -- target vs. actual path')
+        ax.legend()
+        plt.show()
     return total_steps
 
 
@@ -477,6 +521,8 @@ if __name__ == "__main__":
     parser.add_argument('--lookahead_dist',     default=DEFAULT_LOOKAHEAD_DIST, type=float,    help='Pure-pursuit lookahead distance in meters (default: 0.3)', metavar='')
     parser.add_argument('--output_folder',      default=DEFAULT_OUTPUT_FOLDER, type=str,       help='Folder where to save the dataset (default: "results")', metavar='')
     parser.add_argument('--seed',               default=DEFAULT_SEED,      type=int,           help='Random seed for shape/placement sampling (default: random)', metavar='')
+    parser.add_argument('--plot',               default=DEFAULT_PLOT,      type=str2bool,      help='Show a position/velocity/attitude vs. time plot (via Logger) after the run (default: False)', metavar='')
+    parser.add_argument('--plot_path',          default=DEFAULT_PLOT_PATH, type=str2bool,      help='Show a 3D plot comparing the target path to the actual flown path after the run (default: False)', metavar='')
     ARGS = parser.parse_args()
 
     run(**vars(ARGS))
