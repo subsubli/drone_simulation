@@ -19,6 +19,9 @@ claude code를 사용해서 학습하는 걸 추천합니다
 
 ## 0. 준비 (한 번만)
 
+drones 환경이 없다면 gym-pybullet-drones 공식 설치 가이드를 따르세요:
+https://github.com/utiasDSL/gym-pybullet-drones#installation
+
 ```bash
 source ~/miniconda3/etc/profile.d/conda.sh
 # 학습용 iql 환경이 없다면:
