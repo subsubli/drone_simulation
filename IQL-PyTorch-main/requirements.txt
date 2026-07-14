@@ -1,7 +1,9 @@
 numpy
 scipy
-pandas
 tqdm
-gym[mujoco] >= 0.18.0
 torch>=1.7.0
-git+https://github.com/rail-berkeley/d4rl@master#egg=d4rl
+
+# Only needed for --env-name (D4RL benchmark) mode -- NOT needed for --csv-file mode:
+# gym[mujoco] >= 0.18.0
+# git+https://github.com/rail-berkeley/d4rl@master#egg=d4rl
+# pandas

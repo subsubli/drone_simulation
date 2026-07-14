@@ -33,19 +33,25 @@ In a terminal, run as:
 Output
 ------
 One row per control step is appended to a CSV under `<output_folder>/shape_dataset/`,
-with columns:
+with columns, matching the (s, a, r, s') schema used directly by the offline-RL training
+code (s' is just the next row's s within the same episode):
 
-    step, t, pos_x, pos_y, pos_z, vel_x, vel_y, vel_z,
-    roll, pitch, yaw, ang_vel_x, ang_vel_y, ang_vel_z,
-    action_vx, action_vy, action_vz, action_yaw_rate,
-    target_pos_x, target_pos_y, target_pos_z,
-    reward, done,
-    shape, center_x, center_y, center_z, start_yaw_deg, tilt_deg, tilt_axis_deg,
-    max_speed, max_accel
+    step,                   # step index within the episode (0-based)
+    tx-x, ty-y, tz-z,       # s[0:3]  -- target_pos - pos (position error, not absolute position)
+    qx, qy, qz, qw,         # s[3:7]  -- orientation quaternion (PyBullet's native quat, no Euler
+                            #            round-trip -- avoids roll/pitch/yaw gimbal-lock/wraparound)
+    vx, vy, vz,             # s[7:10] -- velocity
+    wx, wy, wz,             # s[10:13]-- angular velocity
+    ax, ay, az,             # a[0:3]  -- action (target velocity); yaw rate is dropped, always 0 here
+    reward, done
 
-`reward` is the negative squared tracking error (-(pos - target_pos)^2), consistent with
-the time+error^2 loss used to pick `--speed_margin`; `done` is True only on an episode's
-last row (each CSV file is one episode, so this just marks that boundary explicitly for
+No per-episode metadata (shape, center, tilt, max_speed/max_accel) is logged -- it isn't part
+of the training tuple, so it's dropped to save space (each dataset's max_speed/max_accel
+choice is still recoverable from which `--output_folder` it was collected into).
+
+`reward` is the negative tracking-error distance (-|pos - target_pos|); `done` is True only
+on an episode's last row (each CSV file is one episode, so this just marks that boundary
+explicitly for
 later use once multiple episodes' CSVs get concatenated).
 
 """
@@ -57,6 +63,7 @@ from datetime import datetime
 
 import numpy as np
 import matplotlib.pyplot as plt
+import pybullet as p
 from scipy.spatial.transform import Rotation
 
 from gym_pybullet_drones.utils.enums import DroneModel, Physics
@@ -94,6 +101,13 @@ DEFAULT_SEED = None
 DEFAULT_PLOT = False
 DEFAULT_PLOT_PATH = False
 DEFAULT_ATT_D_GAIN_SCALE = 1.0  # 1.0 = DSLPIDControl's unmodified (real-hardware-tuned) gains
+DEFAULT_PERTURB_PROB = 0.0  # 0.0 = off, unmodified behavior
+DEFAULT_PERTURB_MAGNITUDE = 1.5  # meters, position-kick magnitude when a perturbation fires
+DEFAULT_PERTURB_COUNT = 1  # number of independent kicks within an episode that gets perturbed
+DEFAULT_OBS_POS_NOISE_STD = 0.0  # meters, 0.0 = off. Gaussian noise added to the *logged*
+# position-error columns only (not reward, not the tracker/policy's actual control input) --
+# mimics real GPS/position-sensor noise so the trained policy learns "noisy-looking
+# observation -> the action that was actually correct", a standard robustness augmentation.
 
 
 def generate_local_shape_waypoints(shape, num_wp, radius, side_jitter, rng):
@@ -276,6 +290,13 @@ class PurePursuitTracker:
         dist = np.linalg.norm(to_lookahead)
         direction = to_lookahead / dist if dist > 1e-6 else np.zeros(3)
         raw_target_vel = direction * self.speed_profile[lookahead_idx]
+        #### The un-slewed target (goal velocity toward the look-ahead point). Exposed so a
+        #### DAgger relabel can log THIS as the action label instead of the slew-limited one:
+        #### at a large tracking error the slew-limited command is near-zero (physically you
+        #### can only change velocity so fast from a standstill), which is a too-weak recovery
+        #### label; the raw goal ("head to the path at profile speed") is the right target to
+        #### learn, with the slew cap re-applied as a post-step at rollout.
+        self.last_raw_target_vel = raw_target_vel
 
         prev_speed = np.linalg.norm(self.prev_target_vel)
         raw_speed = np.linalg.norm(raw_target_vel)
@@ -348,7 +369,45 @@ def run(
         plot=DEFAULT_PLOT,
         plot_path=DEFAULT_PLOT_PATH,
         att_d_gain_scale=DEFAULT_ATT_D_GAIN_SCALE,
+        policy_fn=None,
+        perturb_prob=DEFAULT_PERTURB_PROB,
+        perturb_magnitude=DEFAULT_PERTURB_MAGNITUDE,
+        perturb_count=DEFAULT_PERTURB_COUNT,
+        obs_pos_noise_std=DEFAULT_OBS_POS_NOISE_STD,
+        dagger_relabel=False,
         ):
+    """`policy_fn`, if given, is called each step as `policy_fn(pos_err, state)` and its
+    return value is used as `target_vel` instead of the pure-pursuit tracker's -- lets an
+    evaluation script fly a trained policy through this same path/physics setup while
+    reusing this function's path generation and reward bookkeeping unchanged. Default
+    (None) preserves the original pure-pursuit-only behavior exactly.
+
+    `perturb_prob` (default 0.0 = off, fully backward compatible): probability this episode
+    gets `perturb_count` random mid-episode position displacements (spread roughly evenly
+    across the middle 60% of the episode, each independently jittered in timing/direction)
+    applied directly to the drone's physics state (a `p.resetBasePositionAndOrientation`
+    call, not a control input -- velocity/orientation are left untouched), each of magnitude
+    drawn from `[0.5, 1.0] * perturb_magnitude` meters in a random direction (default range
+    ~0.75-1.5m, matching the scale of tracking-error observed when a trained policy's
+    rollout actually diverges). The pure-pursuit tracker re-anchors to actual position every
+    step regardless of how it got there, so the steps following each kick record a genuine,
+    causally-consistent recovery trajectory -- data the un-perturbed expert never produces
+    (it never leaves near-zero tracking error), which is otherwise completely missing from
+    this pipeline's datasets. `perturb_count > 1` exists because a single dataset-wide
+    perturbation *rate* still only yields a handful of distinct excursion events across a
+    whole collection run -- multiplying kicks per perturbed episode is a cheaper way to grow
+    the diversity of recovery examples than growing total steps. See
+    project_drone_offline_rl memory for why this was added.
+
+    `obs_pos_noise_std` (default 0.0 = off, meters): Gaussian noise added independently
+    per-axis to the *logged* `tx-x/ty-y/tz-z` columns only -- not to `reward` (still computed
+    from the true error) and not to the tracker/policy's actual control input (still driven
+    by the true simulator state). Mimics real position-sensor noise so the trained policy
+    sees "state that looks slightly off" paired with the action that was genuinely correct
+    for the true state, a standard robustness augmentation. This is complementary to (does
+    not substitute for) `perturb_prob`/`perturb_magnitude`: it densifies coverage of small
+    deviations near the path, it does not teach recovery from meter-scale excursions.
+    """
     rng = np.random.default_rng(seed)
 
     #### Each episode gets its own max_speed/max_accel, drawn once here -- with
@@ -423,29 +482,54 @@ def run(
     csv_file = open(csv_path, 'w', newline='')
     writer = csv.writer(csv_file)
     writer.writerow([
-        'step', 't',
-        'pos_x', 'pos_y', 'pos_z',
-        'vel_x', 'vel_y', 'vel_z',
-        'roll', 'pitch', 'yaw',
-        'ang_vel_x', 'ang_vel_y', 'ang_vel_z',
-        'action_vx', 'action_vy', 'action_vz', 'action_yaw_rate',
-        'target_pos_x', 'target_pos_y', 'target_pos_z',
+        'step',
+        'tx-x', 'ty-y', 'tz-z',
+        'qx', 'qy', 'qz', 'qw',
+        'vx', 'vy', 'vz',
+        'wx', 'wy', 'wz',
+        'ax', 'ay', 'az',
         'reward', 'done',
-        'shape', 'center_x', 'center_y', 'center_z', 'start_yaw_deg', 'tilt_deg', 'tilt_axis_deg',
-        'max_speed', 'max_accel',
     ])
-    episode_meta = [shape, *ep['center'], ep['start_yaw_deg'], ep['tilt_deg'], ep['tilt_axis_deg'], max_speed, max_accel]
     actual_pos = [] if plot_path else None
 
     #### Run the simulation ######################################
     action = np.zeros((1, 4))
     START = time.time()
     total_steps = int(duration_sec * control_freq_hz)
+
+    #### perturb_prob==0 (default) draws nothing from `rng`, so existing seeds/episodes are
+    #### reproduced exactly unless a caller opts in -- same pattern as max_speed/max_accel above.
+    #### Kicks are spread across the middle 60% of the episode (evenly-spaced base points,
+    #### each jittered +/-5% of total_steps) so multiple kicks land at distinct, separated
+    #### times rather than clustering.
+    perturb_map = {}
+    if perturb_prob > 0 and rng.uniform() < perturb_prob:
+        n_kicks = max(1, int(perturb_count))
+        base_steps = np.linspace(0.2, 0.8, n_kicks) * total_steps
+        for base_step in base_steps:
+            step_i = int(base_step + rng.uniform(-0.05, 0.05) * total_steps)
+            direction = rng.normal(size=3)
+            direction /= np.linalg.norm(direction)
+            perturb_map[step_i] = direction * rng.uniform(0.5 * perturb_magnitude, perturb_magnitude)
+
     for i in range(total_steps):
         #### CtrlAviary's own reward/terminated/truncated are unused dummies (it's not
         #### built for RL) -- ours is computed below instead, from the actual tracking error.
         obs, _, _, _, info = env.step(action)
         state = obs[0]
+
+        #### Directly overrides the drone's physics position (not a control input, velocity/
+        #### orientation untouched) so the *next* step() starts from a genuinely off-path
+        #### state -- the tracker/PID then have to recover from it for real, producing
+        #### causally-consistent recovery data instead of anything synthetic. This step's
+        #### own row is unaffected (state above was already read before the kick); only
+        #### step i+1 onward reflects it.
+        if i in perturb_map:
+            cur_pos, cur_quat = p.getBasePositionAndOrientation(env.DRONE_IDS[0], physicsClientId=env.CLIENT)
+            new_pos = np.array(cur_pos) + perturb_map[i]
+            p.resetBasePositionAndOrientation(env.DRONE_IDS[0], new_pos.tolist(), cur_quat,
+                                               physicsClientId=env.CLIENT)
+            print(f"[INFO] perturbation applied at step {i}: offset={perturb_map[i].round(2)} m")
 
         #### Pure velocity control: target_pos = current position, so the PID's
         #### position term (P and I) always sees zero error and contributes nothing.
@@ -455,36 +539,62 @@ def run(
         #### transition -- is driven only by target_vel, which is exactly what's logged
         #### as `action` below: (state, action) stays self-consistent for a policy that
         #### will later be rolled out through the same pure-velocity controller.
-        target_vel, closest_idx = tracker.step(state[0:3])
+        #### DAgger relabel: the drone is driven by the policy (to visit the states the
+        #### policy actually reaches -- the whole point of DAgger), so the tracker's own
+        #### slew memory (prev_target_vel) is stale. Reset it to the drone's true current
+        #### velocity so the pure-pursuit label is the physically-reachable expert command
+        #### from where the drone really is.
+        if dagger_relabel and policy_fn is not None:
+            tracker.prev_target_vel = state[10:13].copy()
+
+        pursuit_vel, closest_idx = tracker.step(state[0:3])
+
+        #### reward = -(tracking error distance), i.e. how close `pos` landed to the reference
+        #### path point pure pursuit was aiming at that step.
+        pos_err = TARGET_POS[closest_idx] - state[0:3]
+
+        exec_vel = policy_fn(pos_err, state) if policy_fn is not None else pursuit_vel
+
+        #### The drone always moves under `exec_vel`. The LOGGED action is the label to
+        #### learn: in DAgger mode it's pure-pursuit's expert answer for this (on-policy)
+        #### state, not what the policy did -- that's what teaches recovery on the states
+        #### the policy visits. `raw` (un-slewed goal velocity) is the stronger label at large
+        #### errors (see tracker.last_raw_target_vel); the slew cap is re-applied at rollout.
+        #### Otherwise (plain collection or plain policy rollout) the logged action is exec_vel.
+        if dagger_relabel and policy_fn is not None:
+            logged_vel = tracker.last_raw_target_vel
+        else:
+            logged_vel = exec_vel
+
         action[0, :], _, _ = ctrl.computeControlFromState(
             control_timestep=env.CTRL_TIMESTEP,
             state=state,
             target_pos=state[0:3],
             target_rpy=INIT_RPY[0],
-            target_vel=target_vel,
+            target_vel=exec_vel,
         )
 
-        #### reward = -(tracking error)^2, i.e. how close `pos` landed to the reference
-        #### path point pure pursuit was aiming at that step -- consistent with the
-        #### time+error^2 loss used to pick speed_margin (see compute_time_optimal_speed_profile).
-        tracking_error_sq = float(np.sum((state[0:3] - TARGET_POS[closest_idx]) ** 2))
-        step_reward = -tracking_error_sq
+        step_reward = -float(np.linalg.norm(pos_err))
         done = (i == total_steps - 1)
 
+        #### Logged separately from `pos_err` -- reward and the control decision above both
+        #### used the true (noiseless) error; only the CSV's state columns get the noisy
+        #### version, so this can't leak into causal consistency.
+        logged_pos_err = pos_err if obs_pos_noise_std == 0 else (
+            pos_err + rng.normal(0, obs_pos_noise_std, size=3))
+
         writer.writerow([
-            i, i / control_freq_hz,
-            *state[0:3],
+            i,
+            *logged_pos_err,
+            *state[3:7],
             *state[10:13],
-            *state[7:10],
             *state[13:16],
-            *target_vel, 0.0,
-            *TARGET_POS[closest_idx],
+            *logged_vel,
             step_reward, done,
-            *episode_meta,
         ])
         if logger is not None:
             logger.log(drone=0, timestamp=i / control_freq_hz, state=state,
-                       control=np.hstack([TARGET_POS[closest_idx], target_vel, np.zeros(6)]))
+                       control=np.hstack([TARGET_POS[closest_idx], logged_vel, np.zeros(6)]))
         if actual_pos is not None:
             actual_pos.append(state[0:3].copy())
 
@@ -553,6 +663,10 @@ if __name__ == "__main__":
     parser.add_argument('--plot',               default=DEFAULT_PLOT,      type=str2bool,      help='Show a position/velocity/attitude vs. time plot (via Logger) after the run (default: False)', metavar='')
     parser.add_argument('--plot_path',          default=DEFAULT_PLOT_PATH, type=str2bool,      help='Show a 3D plot comparing the target path to the actual flown path after the run (default: False)', metavar='')
     parser.add_argument('--att_d_gain_scale',   default=DEFAULT_ATT_D_GAIN_SCALE, type=float,   help='Scales DSLPIDControl.D_COEFF_TOR (attitude D-gain) for this run only, e.g. 0.5 to damp roll/pitch chatter under velocity-only control (default: 1.0 = unmodified)', metavar='')
+    parser.add_argument('--perturb_prob',       default=DEFAULT_PERTURB_PROB, type=float,      help='Probability this episode gets perturb_count random mid-episode position displacements, to record off-path recovery data (default: 0.0 = off)', metavar='')
+    parser.add_argument('--perturb_magnitude',  default=DEFAULT_PERTURB_MAGNITUDE, type=float, help='Max meters of each position displacement when perturbation fires (default: 1.5)', metavar='')
+    parser.add_argument('--perturb_count',      default=DEFAULT_PERTURB_COUNT, type=int,       help='Number of independent kicks within an episode that gets perturbed (default: 1)', metavar='')
+    parser.add_argument('--obs_pos_noise_std',  default=DEFAULT_OBS_POS_NOISE_STD, type=float, help='Meters of Gaussian noise added to the logged tx-x/ty-y/tz-z columns only (not reward, not control); default: 0.0 = off', metavar='')
     ARGS = parser.parse_args()
 
     run(**vars(ARGS))

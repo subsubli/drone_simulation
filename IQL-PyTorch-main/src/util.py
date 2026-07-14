@@ -126,7 +126,7 @@ class Log:
         self.dir.mkdir(parents=True)
         self.txt_file = open(self.dir/txt_filename, 'w')
         self.csv_file = None
-        (self.dir/cfg_filename).write_text(json.dumps(cfg_dict))
+        (self.dir/cfg_filename).write_text(json.dumps(cfg_dict, default=str))
         self.txt_filename = txt_filename
         self.csv_filename = csv_filename
         self.cfg_filename = cfg_filename

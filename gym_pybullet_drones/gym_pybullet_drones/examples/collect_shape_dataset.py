@@ -50,6 +50,10 @@ def collect(
         lookahead_dist=sd.DEFAULT_LOOKAHEAD_DIST,
         output_folder=sd.DEFAULT_OUTPUT_FOLDER,
         att_d_gain_scale=sd.DEFAULT_ATT_D_GAIN_SCALE,
+        perturb_prob=sd.DEFAULT_PERTURB_PROB,
+        perturb_magnitude=sd.DEFAULT_PERTURB_MAGNITUDE,
+        perturb_count=sd.DEFAULT_PERTURB_COUNT,
+        obs_pos_noise_std=sd.DEFAULT_OBS_POS_NOISE_STD,
         ):
     total_steps = 0
     episode_idx = 0
@@ -72,7 +76,9 @@ def collect(
                                 max_accel_min=max_accel_min, max_accel_max=max_accel_max,
                                 speed_margin=speed_margin, lookahead_dist=lookahead_dist,
                                 output_folder=output_folder, seed=seed,
-                                att_d_gain_scale=att_d_gain_scale)
+                                att_d_gain_scale=att_d_gain_scale,
+                                perturb_prob=perturb_prob, perturb_magnitude=perturb_magnitude,
+                                perturb_count=perturb_count, obs_pos_noise_std=obs_pos_noise_std)
         total_steps += episode_steps
         per_shape_count[shape] += 1
         episode_idx += 1
@@ -108,6 +114,10 @@ if __name__ == "__main__":
     parser.add_argument('--lookahead_dist',     default=sd.DEFAULT_LOOKAHEAD_DIST, type=float,    help='Pure-pursuit lookahead distance in meters (default: 0.3)', metavar='')
     parser.add_argument('--output_folder',      default=sd.DEFAULT_OUTPUT_FOLDER, type=str,       help='Folder where to save datasets (default: "results")', metavar='')
     parser.add_argument('--att_d_gain_scale',   default=sd.DEFAULT_ATT_D_GAIN_SCALE, type=float,  help='Scales DSLPIDControl attitude D-gain for every episode (default: 1.0 = unmodified)', metavar='')
+    parser.add_argument('--perturb_prob',       default=sd.DEFAULT_PERTURB_PROB, type=float,      help='Probability each episode gets perturb_count random mid-episode position displacements, to record off-path recovery data (default: 0.0 = off)', metavar='')
+    parser.add_argument('--perturb_magnitude',  default=sd.DEFAULT_PERTURB_MAGNITUDE, type=float, help='Max meters of each position displacement when perturbation fires (default: 1.5)', metavar='')
+    parser.add_argument('--perturb_count',      default=sd.DEFAULT_PERTURB_COUNT, type=int,       help='Number of independent kicks within an episode that gets perturbed (default: 1)', metavar='')
+    parser.add_argument('--obs_pos_noise_std',  default=sd.DEFAULT_OBS_POS_NOISE_STD, type=float, help='Meters of Gaussian noise added to the logged tx-x/ty-y/tz-z columns only (not reward, not control); default: 0.0 = off', metavar='')
     ARGS = parser.parse_args()
 
     collect(**vars(ARGS))

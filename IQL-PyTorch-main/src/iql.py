@@ -17,7 +17,7 @@ def asymmetric_l2_loss(u, tau):
 
 class ImplicitQLearning(nn.Module):
     def __init__(self, qf, vf, policy, optimizer_factory, max_steps,
-                 tau, beta, discount=0.99, alpha=0.005):
+                 tau, beta, discount=0.99, alpha=0.005, smoothness_coef=0.0):
         super().__init__()
         self.qf = qf.to(DEFAULT_DEVICE)
         self.q_target = copy.deepcopy(qf).requires_grad_(False).to(DEFAULT_DEVICE)
@@ -31,6 +31,11 @@ class ImplicitQLearning(nn.Module):
         self.beta = beta
         self.discount = discount
         self.alpha = alpha
+        #### Penalizes the policy's mean-action jump between consecutive states in the
+        #### same trajectory (observations -> next_observations), independent of the
+        #### expert actions in the dataset -- discourages a jittery learned policy even
+        #### if the demonstrations themselves are smooth. 0 = original IQL (no penalty).
+        self.smoothness_coef = smoothness_coef
 
     def update(self, observations, actions, next_observations, rewards, terminals):
         with torch.no_grad():
@@ -63,13 +68,29 @@ class ImplicitQLearning(nn.Module):
         policy_out = self.policy(observations)
         if isinstance(policy_out, torch.distributions.Distribution):
             bc_losses = -policy_out.log_prob(actions)
+            mean_action = policy_out.mean
         elif torch.is_tensor(policy_out):
             assert policy_out.shape == actions.shape
             bc_losses = torch.sum((policy_out - actions)**2, dim=1)
+            mean_action = policy_out
         else:
             raise NotImplementedError
         policy_loss = torch.mean(exp_adv * bc_losses)
+
+        if self.smoothness_coef > 0:
+            next_policy_out = self.policy(next_observations)
+            next_mean_action = next_policy_out.mean if isinstance(
+                next_policy_out, torch.distributions.Distribution) else next_policy_out
+            smoothness_loss = torch.mean(torch.sum((mean_action - next_mean_action)**2, dim=1))
+            policy_loss = policy_loss + self.smoothness_coef * smoothness_loss
+
         self.policy_optimizer.zero_grad(set_to_none=True)
         policy_loss.backward()
         self.policy_optimizer.step()
         self.policy_lr_schedule.step()
+
+        return {
+            'v_loss': v_loss.item(),
+            'q_loss': q_loss.item(),
+            'policy_loss': policy_loss.item(),
+        }
