@@ -5,7 +5,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
-from .util import DEFAULT_DEVICE, compute_batched, update_exponential_moving_average
+from . import util  # reference util.DEFAULT_DEVICE dynamically so main.py's --device override is honored
+from .util import compute_batched, update_exponential_moving_average
 
 
 EXP_ADV_MAX = 100.
@@ -19,10 +20,10 @@ class ImplicitQLearning(nn.Module):
     def __init__(self, qf, vf, policy, optimizer_factory, max_steps,
                  tau, beta, discount=0.99, alpha=0.005, smoothness_coef=0.0):
         super().__init__()
-        self.qf = qf.to(DEFAULT_DEVICE)
-        self.q_target = copy.deepcopy(qf).requires_grad_(False).to(DEFAULT_DEVICE)
-        self.vf = vf.to(DEFAULT_DEVICE)
-        self.policy = policy.to(DEFAULT_DEVICE)
+        self.qf = qf.to(util.DEFAULT_DEVICE)
+        self.q_target = copy.deepcopy(qf).requires_grad_(False).to(util.DEFAULT_DEVICE)
+        self.vf = vf.to(util.DEFAULT_DEVICE)
+        self.policy = policy.to(util.DEFAULT_DEVICE)
         self.v_optimizer = optimizer_factory(self.vf.parameters())
         self.q_optimizer = optimizer_factory(self.qf.parameters())
         self.policy_optimizer = optimizer_factory(self.policy.parameters())

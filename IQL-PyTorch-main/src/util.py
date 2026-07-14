@@ -11,7 +11,17 @@ import torch
 import torch.nn as nn
 
 
-DEFAULT_DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+def _pick_device():
+    #### CUDA if present, else CPU. MPS (Mac GPU) is deliberately NOT auto-selected: benchmarked
+    #### on this small IQL MLP it's ~4x SLOWER than single-thread CPU (109 vs 421 it/s) -- the
+    #### per-op GPU launch overhead dwarfs the tiny matmuls. CPU single-thread is the Mac fast
+    #### path. MPS is still reachable via `--device mps` if you ever scale the net way up.
+    if torch.cuda.is_available():
+        return torch.device('cuda')
+    return torch.device('cpu')
+
+
+DEFAULT_DEVICE = _pick_device()
 
 
 class Squeeze(nn.Module):

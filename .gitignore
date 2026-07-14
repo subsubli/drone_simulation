@@ -1,4 +1,19 @@
 /.DS_Store
-dataset_1M/
+.DS_Store
+
+# --- large / regenerable artifacts (rebuild via README pipeline) ---
 *.csv
 *.zip
+*.pt
+*.npz
+*.log
+policy_paths.png
+
+IQL-PyTorch-main/runs/
+dataset_1M/
+**/shape_dataset/
+**/__pycache__/
+*.pyc
+*.egg-info/
+.idea/
+.vscode/

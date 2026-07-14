@@ -1,4 +1,0 @@
-[21:31:07] Log dir: /Users/hanjakp/drone_simulation/IQL-PyTorch-main/runs/merged/07-14-26_21.31.07_lwyv
-[21:31:10] off-path rows (|pos_err|>0.2): 307566 / 447846 (68.68%)
-[21:34:01] {'step': 75000, 'v_loss': 0.040353450924158096, 'q_loss': 0.3667064607143402, 'policy_loss': 0.2308625429868698}
-[21:36:51] {'step': 150000, 'v_loss': 0.03552061691880226, 'q_loss': 0.2707459330558777, 'policy_loss': 0.16169707477092743}

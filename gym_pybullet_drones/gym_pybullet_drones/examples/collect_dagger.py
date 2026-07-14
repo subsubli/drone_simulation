@@ -10,6 +10,7 @@ Run in the `drones` env (needs pybullet + torch):
         --shapes triangle --seed-start 0 --n-seeds 20 --output_folder dagger_iter1
 """
 import argparse
+import json
 import os
 
 import shape_dataset as sd
@@ -26,9 +27,17 @@ def main():
                          help='slew cap on the policy driving the drone (match rollout); keeps the '
                               'on-policy states realistic instead of blown-up')
     parser.add_argument('--att_d_gain_scale', type=float, default=0.3)
+    parser.add_argument('--perturb_prob', type=float, default=0.0,
+                         help='probability an episode gets perturbation kicks DURING the DAgger '
+                              'rollout -- makes the policy visit more off-path (incl. corner) '
+                              'recovery states, which pure-pursuit then labels; 0 = off')
+    parser.add_argument('--perturb_count', type=int, default=1)
+    parser.add_argument('--perturb_magnitude', type=float, default=1.5)
     parser.add_argument('--output_folder', default='dagger_data')
     ARGS = parser.parse_args()
 
+    with open(os.path.join(ARGS.run_dir, 'config.json')) as f:
+        cfg = json.load(f)
     obs_mean, obs_std, action_bound = load_normalization(ARGS.run_dir)
     policy = load_policy(ARGS.run_dir, max_action=action_bound)
 
@@ -37,9 +46,13 @@ def main():
         for shape in ARGS.shapes:
             #### Fresh policy_fn per episode so the slew-limiter's internal prev-action state
             #### resets at each episode start (it's a stateful closure).
-            policy_fn = make_policy_fn(policy, obs_mean, obs_std, slew_max_accel=ARGS.slew_max_accel)
+            policy_fn = make_policy_fn(policy, obs_mean, obs_std, slew_max_accel=ARGS.slew_max_accel,
+                                        include_prev_action=bool(cfg.get('include_prev_action')),
+                                        include_lookahead=bool(cfg.get('include_lookahead')))
             sd.run(shape=shape, seed=seed, gui=False, policy_fn=policy_fn, dagger_relabel=True,
-                   att_d_gain_scale=ARGS.att_d_gain_scale, output_folder=ARGS.output_folder)
+                   att_d_gain_scale=ARGS.att_d_gain_scale, output_folder=ARGS.output_folder,
+                   perturb_prob=ARGS.perturb_prob, perturb_count=ARGS.perturb_count,
+                   perturb_magnitude=ARGS.perturb_magnitude)
             n_eps += 1
     print(f"[INFO] DAgger collection done: {n_eps} episodes -> {ARGS.output_folder}/shape_dataset/")
 

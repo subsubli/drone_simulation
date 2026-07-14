@@ -1,9 +1,11 @@
+import os
 from pathlib import Path
 
 import numpy as np
 import torch
 from tqdm import trange
 
+import src.util  # for overriding DEFAULT_DEVICE from --device
 from src.iql import ImplicitQLearning
 from src.policy import GaussianPolicy, DeterministicPolicy
 from src.value_functions import TwinQ, ValueFunction
@@ -34,7 +36,15 @@ def get_env_and_dataset(log, env_name, max_episode_steps):
 
 
 def main(args):
-    torch.set_num_threads(1)
+    #### --device auto (default) = cuda>cpu (see src.util._pick_device; MPS excluded because it
+    #### benchmarked slower than CPU on this small MLP). --device mps/cpu/cuda forces one.
+    #### --threads defaults to 1: this MLP is so small that single-thread CPU is FASTEST
+    #### (measured 421 it/s vs 199 multi-thread vs 109 MPS); raise it only if you scale the net
+    #### /batch way up. GPU (cuda) ignores CPU threads.
+    if args.device != 'auto':
+        src.util.DEFAULT_DEVICE = torch.device(args.device)
+    torch.set_num_threads(max(1, args.threads))
+    print(f'[INFO] device={src.util.DEFAULT_DEVICE}, cpu_threads={max(1, args.threads)}')
     log_name = args.csv_file.stem if args.csv_file else args.env_name
     log = Log(Path(args.log_dir)/log_name, vars(args))
     log(f'Log dir: {log.dir}')
@@ -50,7 +60,9 @@ def main(args):
     if args.csv_file:
         env = None
         raw_dataset, obs_norm = load_drone_dataset(args.csv_file, reward_clip_min=args.reward_clip_min,
-                                                    pos_err_scale=args.pos_err_scale)
+                                                    pos_err_scale=args.pos_err_scale,
+                                                    include_prev_action=args.include_prev_action,
+                                                    include_lookahead=args.include_lookahead)
         dataset = {k: torchify(v) for k, v in raw_dataset.items()}
         offpath_idx = torch.from_numpy(np.where(obs_norm['offpath_mask'])[0]).to(
             dataset['observations'].device)
@@ -137,6 +149,12 @@ if __name__ == '__main__':
     parser.add_argument('--env-name', default=None, help='D4RL env name (mutually exclusive with --csv-file)')
     parser.add_argument('--csv-file', type=Path, default=None, help='shape_dataset.py CSV (per-episode or merged.csv) to train on instead of a D4RL env')
     parser.add_argument('--log-dir', required=True)
+    parser.add_argument('--device', default='auto', choices=['auto', 'cpu', 'mps', 'cuda'],
+                         help='auto = cuda>cpu (MPS excluded: benchmarked slower than CPU on this '
+                              'small MLP). Force with cpu/mps/cuda.')
+    parser.add_argument('--threads', type=int, default=1,
+                         help='CPU threads (default 1 -- fastest for this small MLP; raise only if '
+                              'you scale net/batch up a lot). Ignored on GPU.')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--discount', type=float, default=0.99)
     parser.add_argument('--hidden-dim', type=int, default=256)
@@ -155,6 +173,14 @@ if __name__ == '__main__':
                               'bounds the discount-bootstrapped TD target scale when perturbation-'
                               'recovery rows have much larger |reward| than normal tracking rows; '
                               'default None = off')
+    parser.add_argument('--include-prev-action', action='store_true',
+                         help='append the previous step action (target_vel) to the observation '
+                              '(13->16 dims) as a path-progress/heading cue; eval must feed the '
+                              'policy its own previous output (evaluate_trained_policy.py handles it)')
+    parser.add_argument('--include-lookahead', action='store_true',
+                         help='append the look-ahead vector lx/ly/lz (drone->ahead-on-path point) '
+                              'to the observation (+3 dims) as the true progress-direction cue; '
+                              'needs a CSV recollected with lx/ly/lz columns')
     parser.add_argument('--pos-err-scale', type=float, default=None,
                          help='overrides the tx-x/ty-y/tz-z normalization divisor with this fixed '
                               'meters value instead of their empirical std, so real position error '

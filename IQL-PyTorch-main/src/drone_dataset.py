@@ -13,9 +13,11 @@ import numpy as np
 
 STATE_COLS = ['tx-x', 'ty-y', 'tz-z', 'qx', 'qy', 'qz', 'qw', 'vx', 'vy', 'vz', 'wx', 'wy', 'wz']
 ACTION_COLS = ['ax', 'ay', 'az']
+LOOKAHEAD_COLS = ['lx', 'ly', 'lz']
 
 
-def load_drone_dataset(csv_file, reward_clip_min=None, pos_err_scale=None):
+def load_drone_dataset(csv_file, reward_clip_min=None, pos_err_scale=None, include_prev_action=False,
+                       include_lookahead=False):
     """`reward_clip_min`, if given, floors `rewards` at that value (reward is always <= 0,
     a negative distance, so there's no meaningful upper clip). Perturbation-recovery rows
     can have reward down around -3 vs. the -0.01 to -0.05 typical of normal tracking; that
@@ -31,6 +33,18 @@ def load_drone_dataset(csv_file, reward_clip_min=None, pos_err_scale=None):
     scale (e.g. 0.1) makes any real position error register as a much larger-magnitude
     input relative to the other channels, regardless of how narrow its empirical spread
     happens to be, forcing the network to give it more weight.
+
+    `include_prev_action`, if True, appends the PREVIOUS step's action (target_vel) to the
+    observation, growing it from 13 to 16 dims. Motivation: the plain 13-dim state has no
+    path-progress / tangent-direction cue -- pos_err is only the perpendicular offset to the
+    nearest path point -- so once on-path (pos_err~0) the policy has no signal for which way
+    to travel and stalls (diagnosed via a progress metric: it covers only 6-27% of the path
+    and completes ~0 laps). The pure-pursuit action IS the look-ahead/progress direction, but
+    the current action can't go in the state (that's the label); the PREVIOUS action can
+    (standard last-action-in-state trick, no leakage) and carries the recent travel direction
+    so the policy can maintain heading. Fit from the CSV without recollecting; at deployment
+    the policy's own previous output is fed back in (see evaluate_trained_policy.py). This is
+    a proxy for a true look-ahead-point state feature (which would need recollection).
     """
     with open(csv_file, newline='') as f:
         rows = list(csv.DictReader(f))
@@ -38,6 +52,12 @@ def load_drone_dataset(csv_file, reward_clip_min=None, pos_err_scale=None):
     observations = np.array([[float(r[c]) for c in STATE_COLS] for r in rows], dtype=np.float32)
     actions = np.array([[float(r[c]) for c in ACTION_COLS] for r in rows], dtype=np.float32)
     rewards = np.array([float(r['reward']) for r in rows], dtype=np.float32)
+    if include_lookahead:
+        #### lx/ly/lz = vector from the drone to the pure-pursuit look-ahead point (points
+        #### AHEAD along the path), the explicit progress/heading cue pos_err lacks. Appended
+        #### to the observation. Needs a CSV recollected with these columns (new schema).
+        lookahead = np.array([[float(r[c]) for c in LOOKAHEAD_COLS] for r in rows], dtype=np.float32)
+        observations = np.concatenate([observations, lookahead], axis=1)
     if reward_clip_min is not None:
         rewards = np.maximum(rewards, reward_clip_min)
     terminals = np.array([r['done'] == 'True' for r in rows], dtype=np.float32)
@@ -45,6 +65,14 @@ def load_drone_dataset(csv_file, reward_clip_min=None, pos_err_scale=None):
         episode_id = np.array([int(r['episode_id']) for r in rows])
     else:
         episode_id = np.zeros(len(rows), dtype=int)  # whole file == one episode
+
+    if include_prev_action:
+        #### prev_action[t] = action[t-1] within the same episode, 0 at each episode's first
+        #### row. Appended to the observation so the policy sees its own recent heading.
+        prev_action = np.zeros_like(actions)
+        same_prev = episode_id[1:] == episode_id[:-1]
+        prev_action[1:][same_prev] = actions[:-1][same_prev]
+        observations = np.concatenate([observations, prev_action], axis=1)
 
     #### next_observations: shift by one row within each episode. The last row of each
     #### episode has no real next state -- left as a copy of its own observation, which is

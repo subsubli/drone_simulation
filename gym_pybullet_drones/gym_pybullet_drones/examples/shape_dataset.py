@@ -95,7 +95,11 @@ DEFAULT_MAX_SPEED_MAX = 2.0  # == min by default -> no randomization unless over
 DEFAULT_MAX_ACCEL_MIN = 2.0
 DEFAULT_MAX_ACCEL_MAX = 2.0
 DEFAULT_SPEED_MARGIN = 0.7  # fraction of max_speed/max_accel the *planned* profile targets
-DEFAULT_LOOKAHEAD_DIST = 0.3  # meters
+DEFAULT_LOOKAHEAD_DIST = 0.3  # meters. (Tried 0.5 to ease corner stalls -- it fixed some
+# corners but broke others, net 10/12 -> 9/12; look-ahead length just relocates the stall,
+# so reverted. Corner traversal is addressed via corner-focused DAgger instead. Kept as the
+# default so collection/DAgger/eval/progress all use the same value -- the lookahead lx/ly/lz
+# state feature is only consistent if this matches everywhere.)
 DEFAULT_OUTPUT_FOLDER = 'results'
 DEFAULT_SEED = None
 DEFAULT_PLOT = False
@@ -297,6 +301,11 @@ class PurePursuitTracker:
         #### label; the raw goal ("head to the path at profile speed") is the right target to
         #### learn, with the slew cap re-applied as a post-step at rollout.
         self.last_raw_target_vel = raw_target_vel
+        #### The vector from the drone to the look-ahead point (world frame). Unlike pos_err
+        #### (offset to the NEAREST point = perpendicular recovery direction), this points
+        #### AHEAD along the path, so it carries the travel/progress direction the policy
+        #### needs to keep moving forward once on-path. Logged as lx/ly/lz for a state feature.
+        self.last_lookahead_vec = to_lookahead
 
         prev_speed = np.linalg.norm(self.prev_target_vel)
         raw_speed = np.linalg.norm(raw_target_vel)
@@ -487,6 +496,7 @@ def run(
         'qx', 'qy', 'qz', 'qw',
         'vx', 'vy', 'vz',
         'wx', 'wy', 'wz',
+        'lx', 'ly', 'lz',
         'ax', 'ay', 'az',
         'reward', 'done',
     ])
@@ -548,12 +558,15 @@ def run(
             tracker.prev_target_vel = state[10:13].copy()
 
         pursuit_vel, closest_idx = tracker.step(state[0:3])
+        lookahead_vec = tracker.last_lookahead_vec  # drone -> look-ahead point (progress direction)
 
         #### reward = -(tracking error distance), i.e. how close `pos` landed to the reference
         #### path point pure pursuit was aiming at that step.
         pos_err = TARGET_POS[closest_idx] - state[0:3]
 
-        exec_vel = policy_fn(pos_err, state) if policy_fn is not None else pursuit_vel
+        #### policy_fn gets the look-ahead vector too (progress-direction state feature); a
+        #### policy that doesn't use it just ignores the 3rd arg.
+        exec_vel = policy_fn(pos_err, state, lookahead_vec) if policy_fn is not None else pursuit_vel
 
         #### The drone always moves under `exec_vel`. The LOGGED action is the label to
         #### learn: in DAgger mode it's pure-pursuit's expert answer for this (on-policy)
@@ -589,6 +602,7 @@ def run(
             *state[3:7],
             *state[10:13],
             *state[13:16],
+            *lookahead_vec,
             *logged_vel,
             step_reward, done,
         ])
