@@ -11,9 +11,9 @@
 claude code를 사용해서 학습하는 걸 추천합니다
 
 현재 초기 데이터를 1.5M으로 잡고 학습 데이터를 만듭니다
-만약 전체 데이터를 1.5M으로 잡고 싶다면 1번에서 1500000이란 숫자를 1000000 근방으로 바꾸고 테스트
+만약 전체 데이터를 1.5M으로 잡고 싶다면 1번에서 1500000이란 숫자를 1000000 근방으로 바꾸고 3번에서 --n-seeds 30~40 근방으로 바꾸고 테스트
 
-0.
+0.3m정도의 lookahead를 사용중 csv에 lx, ly, lz가 이 룩어헤드로 방향을 알려줌
 
 ---
 
@@ -124,12 +124,11 @@ conda activate drones && cd /Users/hanjakp/drone_simulation/gym_pybullet_drones/
 KMP_DUPLICATE_LIB_OK=TRUE python collect_dagger.py \
   --run-dir "$(ls -td /Users/hanjakp/drone_simulation/IQL-PyTorch-main/runs/merged/*/ | head -1)" \
   --shapes triangle square pentagon circle \
-  --seed-start 0 --n-seeds 60 \
+  --seed-start 0 --n-seeds 30 \
   --slew-max-accel 2.0 \
   --perturb_prob 1.0 --perturb_count 8 --perturb_magnitude 1.5 \
   --output_folder dagger
 ```
-> `--n-seeds` 는 초기 데이터 규모에 맞춰 잡는다: 검증은 400k 초기 데이터에 15였으니, 1.5M(약 3.75배)이면 **60** 정도(= seed당 4도형 × 60 = 240 에피소드). 더 다양한 경로/코너 상태를 커버할수록 강건해진다.
 → `dagger/shape_dataset/*.csv`.
 
 이제 **1단계 원본 + DAgger 데이터를 합쳐 재병합**한다.
