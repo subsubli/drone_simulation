@@ -125,7 +125,7 @@ python main.py \
 conda activate drones && cd ~/drone_simulation/gym_pybullet_drones/gym_pybullet_drones/examples
 
 KMP_DUPLICATE_LIB_OK=TRUE python collect_dagger.py \
-  --run-dir "$(ls -td ~/drone_simulation/IQL-PyTorch-main/runs/merged/*/ | head -1)" \
+  --run-dir "$(ls -td ~/drone_simulation/IQL-PyTorch-main/runs/merged/*/ 2>/dev/null | head -1)" \
   --shapes triangle square pentagon circle \
   --seed-start 0 --n-seeds 30 \
   --slew-max-accel 2.0 \
@@ -165,7 +165,7 @@ python main.py \
 ```
 재학습이 끝나면 최종 정책은 `~/drone_simulation/IQL-PyTorch-main/runs/merged/` 의 최신 폴더다. (코너가 여전히 남으면 3–4단계를 그 폴더로 `--run-dir` 지정해 한 번 더 반복 = DAgger iteration.)
 
-> 아래 5·6단계는 그 **최신 run(= 방금 학습한 최종 정책)을 `RUN` 변수로 자동으로 잡는다**(`RUN=$(ls -td .../runs/merged/*/ | head -1)`). 특정 정책을 지정하고 싶으면 `RUN` 을 그 폴더 경로로 바꾸면 된다.
+> 아래 5·6단계는 그 **최신 run(= 방금 학습한 최종 정책)을 `RUN` 변수로 자동으로 잡는다**(`RUN=$(ls -td .../runs/merged/*/ 2>/dev/null | head -1)`). 특정 정책을 지정하고 싶으면 `RUN` 을 그 폴더 경로로 바꾸면 된다.
 
 ---
 
@@ -173,7 +173,7 @@ python main.py \
 
 ```bash
 conda activate drones && cd ~/drone_simulation/gym_pybullet_drones/gym_pybullet_drones/examples
-RUN=$(ls -td ~/drone_simulation/IQL-PyTorch-main/runs/merged/*/ | head -1)   # 최신(= 최종) 정책
+RUN=$(ls -td ~/drone_simulation/IQL-PyTorch-main/runs/merged/*/ 2>/dev/null | head -1)   # 최신(= 최종) 정책
 ```
 
 **(a) 경로 진행(progress) — "실제로 도형을 도는가"의 진짜 지표**
@@ -201,7 +201,7 @@ KMP_DUPLICATE_LIB_OK=TRUE python evaluate_trained_policy.py \
 **Top-down PNG (목표 경로 vs 실제 비행, 4도형 2×2)** — 파일로 저장:
 ```bash
 conda activate drones && cd ~/drone_simulation/gym_pybullet_drones/gym_pybullet_drones/examples
-RUN=$(ls -td ~/drone_simulation/IQL-PyTorch-main/runs/merged/*/ | head -1)   # 최신(= 최종) 정책
+RUN=$(ls -td ~/drone_simulation/IQL-PyTorch-main/runs/merged/*/ 2>/dev/null | head -1)   # 최신(= 최종) 정책
 KMP_DUPLICATE_LIB_OK=TRUE python viz_paths.py "$RUN" 500     # -> ./policy_paths.png
 ```
 
