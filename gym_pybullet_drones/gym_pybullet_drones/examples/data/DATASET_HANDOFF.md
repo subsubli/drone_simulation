@@ -30,6 +30,7 @@ python merge_shape_dataset.py --input_folder data/shape_dataset --output_file da
 - **Perturbation(`--perturb_*`)**: 에피소드마다 6번씩 무작위 위치 킥(최대 1.5m)을 넣어 "경로 이탈 → 복귀" 샘플을 만듭니다. 이 때문에 off-path 비율이 높습니다(아래 통계).
 - **`--att_d_gain_scale 0.3`**: 이 속도-전용 제어 모드에서 자세 D-gain을 낮춰 roll/pitch 진동을 줄인 설정.
 - **노이즈 없음**: 이 데이터셋에는 관측 노이즈를 넣지 않았습니다(σ=0).
+- **도형 배치**: 에피소드마다 **5×5×5 m workspace** 안에 도형을 무작위로 놓습니다 — 원주 반경 ≈ 2.2 m(변마다 ±30% jitter), 평면 tilt ±30°, 시작 yaw·중심 위치 무작위. 좌표계는 world frame, 단위는 m. (단, 위 통계에서 보듯 perturbation 킥 이후 드론이 workspace 밖으로 수십 m 밀려나는 복구 구간이 있으므로, 5×5×5 m는 **도형 배치 범위**이지 드론 위치의 물리적 경계는 아닙니다.)
 
 도형별 에피소드: triangle 106 / square 106 / pentagon 106 / circle 105.
 
