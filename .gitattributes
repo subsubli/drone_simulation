@@ -1,1 +1,2 @@
 gym_pybullet_drones/gym_pybullet_drones/examples/data/merged1.5M.csv filter=lfs diff=lfs merge=lfs -text
+gym_pybullet_drones/gym_pybullet_drones/examples/data_soft/merged1.5M_soft.csv.gz filter=lfs diff=lfs merge=lfs -text
