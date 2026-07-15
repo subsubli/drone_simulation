@@ -37,18 +37,18 @@ python merge_shape_dataset.py --input_folder data/shape_dataset --output_file da
 
 ## 2. 컬럼 스키마 (23개)
 
-| 컬럼 | 차원 | 의미 |
-|---|---|---|
-| `episode_id` | 1 | 에피소드 번호 (병합 시 유일하게 재부여됨. 에피소드 경계 = next_state 계산 기준) |
-| `step` | 1 | 에피소드 내 스텝 인덱스 |
-| `tx-x, ty-y, tz-z` | 3 | **위치 오차** `target_pos − drone_pos` (절대 위치가 아님, world frame) |
-| `qx, qy, qz, qw` | 4 | 자세 쿼터니언 (PyBullet native) |
-| `vx, vy, vz` | 3 | 선속도 (world frame) |
-| `wx, wy, wz` | 3 | 각속도 |
-| `lx, ly, lz` | 3 | **look-ahead 벡터** = 드론 → 경로상 앞쪽 목표점 (진행 방향 신호, world frame) |
-| `ax, ay, az` | 3 | **action = target velocity (m/s)**. 학습이 예측할 대상 |
-| `reward` | 1 | `−|pos_err|` (가장 가까운 경로점까지의 거리, 음수) |
-| `done` | 1 | 에피소드 마지막 스텝에서만 True |
+| 컬럼 | 차원 | 단위 | 의미 |
+|---|---|---|---|
+| `episode_id` | 1 | — | 에피소드 번호 (병합 시 유일하게 재부여됨. 에피소드 경계 = next_state 계산 기준) |
+| `step` | 1 | 스텝 (×0.01 s) | 에피소드 내 스텝 인덱스 (100 Hz이므로 초 = step/100) |
+| `tx-x, ty-y, tz-z` | 3 | **m** | **위치 오차** `target_pos − drone_pos` (절대 위치가 아님, world frame) |
+| `qx, qy, qz, qw` | 4 | 무단위 (단위 쿼터니언) | 자세 쿼터니언 (PyBullet native) |
+| `vx, vy, vz` | 3 | **m/s** | 선속도 (world frame) |
+| `wx, wy, wz` | 3 | **rad/s** | 각속도 |
+| `lx, ly, lz` | 3 | **m** | **look-ahead 벡터** = 드론 → 경로상 앞쪽 목표점 (진행 방향 신호, world frame) |
+| `ax, ay, az` | 3 | **m/s** | **action = target velocity**. 학습이 예측할 대상 |
+| `reward` | 1 | **m** (음수) | `−|pos_err|` (가장 가까운 경로점까지의 거리) |
+| `done` | 1 | bool | 에피소드 마지막 스텝에서만 True |
 
 **학습용 state = 16차원** = `[tx-x..tz-z (3), qx..qw (4), vx..vz (3), wx..wz (3), lx..lz (3)]`.
 **action = 3차원** = `[ax, ay, az]` (target velocity, yaw rate는 항상 0이라 제외).
@@ -59,12 +59,49 @@ python merge_shape_dataset.py --input_folder data/shape_dataset --output_file da
 
 ---
 
-## 3. 통계 (앞 30만 스텝 샘플 기준)
+## 3. 통계
 
+**요약 (앞 30만 스텝 샘플 기준)**
 - `|pos_err|`: median ≈ **3.1 m**, mean ≈ 5.6 m — perturbation 때문에 값이 큽니다.
 - **off-path 비율(`|pos_err| > 0.2m`) ≈ 79%** — 데이터의 대부분이 "이탈 후 복귀" 상태입니다. 이건 의도된 것으로, offline-RL이 복구를 배우게 합니다(이 때문에 데이터가 순수 near-expert가 아니라 mixed-quality가 되어 value 학습이 의미 있어집니다).
-- `|action|` (target velocity): mean ≈ 1.3 m/s, max ≈ 1.4 m/s.
 - 기본 속도 한계: max_speed 2.0 m/s, max_accel 2.0 m/s²; look-ahead 거리 0.3 m.
+
+**컬럼별 최솟값 / 최댓값 (전체 1,502,261 스텝)**
+
+| 채널 | 단위 | min | max |
+|---|---|---|---|
+| `tx-x` | m | −36.585 | +27.314 |
+| `ty-y` | m | −24.537 | +34.257 |
+| `tz-z` | m | −33.261 | +5.217 |
+| `qx` | — | −0.866 | +1.000 |
+| `qy` | — | −0.866 | +1.000 |
+| `qz` | — | −0.865 | +1.000 |
+| `qw` | — | −0.500 | +1.000 |
+| `vx` | m/s | −34.376 | +19.117 |
+| `vy` | m/s | −28.276 | +15.962 |
+| `vz` | m/s | −15.478 | +93.839 |
+| `wx` | rad/s | −100.000 | +100.000 |
+| `wy` | rad/s | −100.000 | +100.000 |
+| `wz` | rad/s | −65.995 | +71.524 |
+| `lx` | m | −36.746 | +27.498 |
+| `ly` | m | −24.479 | +34.422 |
+| `lz` | m | −33.292 | +5.225 |
+| `ax` | m/s | −1.400 | +1.400 |
+| `ay` | m/s | −1.400 | +1.400 |
+| `az` | m/s | −1.400 | +1.400 |
+| `reward` | m | −38.085 | −0.000 |
+
+**벡터 크기 최솟값 / 최댓값**
+
+| 벡터 | 단위 | min | max |
+|---|---|---|---|
+| `|pos_err|` | m | 0.000 | 38.085 |
+| `|look-ahead|` | m | 0.080 | 38.171 |
+| `|velocity|` | m/s | 0.000 | 93.844 |
+| `|angular velocity|` | rad/s | 0.000 | 141.724 |
+| `|action|` (target vel) | m/s | 0.020 | 1.400 |
+
+> ⚠️ **극단값 주의**: `action`은 ±1.4 m/s로 깔끔하게 bound돼 있지만(target-velocity 클립), `velocity`가 최대 ~94 m/s, `angular velocity`가 ~142 rad/s까지 튀는 값은 **물리적 실제 비행이 아니라 perturbation 킥(위치를 순간 리셋)의 유한차분 아티팩트**입니다. 킥이 일어난 그 한 스텝에서 (이동거리)/(0.01s)로 속도가 순간적으로 폭발한 것이며, `pos_err`/`look-ahead`가 최대 ~38 m인 것도 킥 직후 크게 벗어난 복구 상태입니다. 이런 행은 off-path 복구 라벨로는 유효하지만, 속도/각속도의 극단값 자체를 "정상 비행 범위"로 해석하면 안 됩니다. 정상 추종 구간의 속도는 target velocity(≤1.4 m/s) 수준입니다.
 
 ---
 
