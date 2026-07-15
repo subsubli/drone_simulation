@@ -2,8 +2,8 @@
 
 드론이 임의의 도형(삼각형·사각형·오각형·원)을 따라 나는 (state, action) 궤적을 모은 **offline-RL 초기 학습 데이터셋**입니다. `gym-pybullet-drones` 시뮬레이터에서 pure-pursuit expert가 비행한 결과를 기록했습니다.
 
-- **파일**: `gym_pybullet_drones/gym_pybullet_drones/examples/data/merged1.5M.csv`
-- **크기**: 629 MB (Git LFS로 관리 — clone 시 `git lfs install` 후 받으면 실제 내용이 내려옵니다. 없으면 포인터 파일만 받아집니다)
+- **파일**: `gym_pybullet_drones/gym_pybullet_drones/examples/data/merged1.5M.csv.gz` (Git LFS, **gzip 압축**)
+- **압축 해제**: `gunzip -k merged1.5M.csv.gz` → `merged1.5M.csv` (629 MB). clone 시 `git lfs install` 후 받아야 실제 내용이 내려옵니다(없으면 포인터 파일만).
 - **규모**: 423 에피소드 / **1,502,261 스텝(행)**
 - **제어 주파수**: 100 Hz (1 스텝 = 0.01초)
 

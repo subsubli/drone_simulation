@@ -3,8 +3,8 @@
 
 # --- large / regenerable artifacts (rebuild via README pipeline) ---
 *.csv
-# exception: ship the 1.5M initial dataset via Git LFS (see .gitattributes)
-!gym_pybullet_drones/gym_pybullet_drones/examples/data/merged1.5M.csv
+# per-episode shape_dataset archives are local-only (regenerable; the merged .csv.gz is enough)
+*.tar.gz
 *.zip
 *.pt
 *.npz
