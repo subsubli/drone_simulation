@@ -34,6 +34,15 @@ python merge_shape_dataset.py --input_folder data/shape_dataset --output_file da
 
 도형별 에피소드: triangle 106 / square 106 / pentagon 106 / circle 105.
 
+### 도형 생성 방식 (`generate_local_shape_waypoints` → `place_waypoints`)
+
+1. **정다각형 근사**: 각 도형은 정N각형입니다 — `triangle`=3변, `square`=4변, `pentagon`=5변, `circle`=**72변**(72각형으로 원을 근사).
+2. **local frame(원점 중심, Z=0)에서 꼭짓점 배치**: N개 꼭짓점을 **각도 균등(0→2π, 증가 순)**으로 놓되, 각 꼭짓점의 원점 거리는 `radius × (1 ± side_jitter)` = **2.2 m × (1 ± 0.3)** 로 매번 무작위. 각도가 증가 순이라 항상 단순 다각형(자기교차 없음)이고, 꼭짓점 거리가 달라 변마다 길이가 제각각입니다. `circle`은 jitter 없이 반경만 변합니다.
+3. **arc-length 등간격 재샘플**: 변 길이와 무관하게 **둘레를 따라 3000 waypoints/lap**로 균등 간격 재샘플합니다(그래서 waypoint 밀도가 코너에 몰리지 않고 일정).
+4. **배치(`place_waypoints`)**: 만든 local 도형을 ① `start_yaw`만큼 회전 → ② 무작위 축으로 **tilt ±30°** 기울임 → ③ **5×5×5 m workspace** 안 무작위 center로 평행이동(바닥에서 floor clearance ≥ 0.3 m). 이 회전·tilt·위치가 에피소드마다 달라 경로 다양성을 만듭니다.
+5. **진행 방향**: 기본은 각도 증가 = **반시계(CCW)**. `--direction`으로 `clockwise=True`이면 waypoint 순서를 뒤집어 **시계(CW)**로 돕니다(닫힌 경로라 시작점은 무관).
+6. **랩 수**: 에피소드당 **3바퀴**(`n_laps=3`), 지속시간은 time-optimal lap time × 3으로 자동 결정.
+
 ---
 
 ## 2. 컬럼 스키마 (23개)
