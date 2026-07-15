@@ -54,15 +54,28 @@ def collect(
         perturb_magnitude=sd.DEFAULT_PERTURB_MAGNITUDE,
         perturb_count=sd.DEFAULT_PERTURB_COUNT,
         obs_pos_noise_std=sd.DEFAULT_OBS_POS_NOISE_STD,
+        direction='both',
         ):
     total_steps = 0
     episode_idx = 0
     per_shape_count = {shape: 0 for shape in shapes}
+    per_dir_count = {'ccw': 0, 'cw': 0}
 
     while total_steps < target_steps:
         shape = shapes[episode_idx % len(shapes)]
         seed = seed_start + episode_idx
+        #### direction='both' alternates traversal direction every full round through `shapes`
+        #### (not every episode) so each shape gets exactly half its episodes clockwise and half
+        #### counter-clockwise -- a per-episode `episode_idx % 2` toggle would instead pin each
+        #### shape to one direction (period-2 toggle vs period-len(shapes) shape cycle). 'ccw'/
+        #### 'cw' force a single direction. Both directions give the policy a traversal-symmetric
+        #### dataset instead of a counter-clockwise-only bias.
+        if direction == 'both':
+            clockwise = ((episode_idx // len(shapes)) % 2 == 1)
+        else:
+            clockwise = (direction == 'cw')
         print(f"[INFO] episode {episode_idx} -- shape={shape} seed={seed} "
+              f"dir={'CW' if clockwise else 'CCW'} "
               f"({total_steps}/{target_steps} steps so far)")
         #### duration_sec is auto (time-optimal lap time * n_laps) unless overridden, and
         #### differs per shape/geometry, so read back the actual step count run() used
@@ -78,14 +91,17 @@ def collect(
                                 output_folder=output_folder, seed=seed,
                                 att_d_gain_scale=att_d_gain_scale,
                                 perturb_prob=perturb_prob, perturb_magnitude=perturb_magnitude,
-                                perturb_count=perturb_count, obs_pos_noise_std=obs_pos_noise_std)
+                                perturb_count=perturb_count, obs_pos_noise_std=obs_pos_noise_std,
+                                clockwise=clockwise)
         total_steps += episode_steps
         per_shape_count[shape] += 1
+        per_dir_count['cw' if clockwise else 'ccw'] += 1
         episode_idx += 1
 
     print(f"[INFO] done: {episode_idx} episodes, {total_steps} steps total (target was {target_steps})")
     for shape, count in per_shape_count.items():
         print(f"  {shape}: {count} episodes")
+    print(f"  direction: {per_dir_count['ccw']} CCW / {per_dir_count['cw']} CW")
 
 
 if __name__ == "__main__":
@@ -118,6 +134,7 @@ if __name__ == "__main__":
     parser.add_argument('--perturb_magnitude',  default=sd.DEFAULT_PERTURB_MAGNITUDE, type=float, help='Max meters of each position displacement when perturbation fires (default: 1.5)', metavar='')
     parser.add_argument('--perturb_count',      default=sd.DEFAULT_PERTURB_COUNT, type=int,       help='Number of independent kicks within an episode that gets perturbed (default: 1)', metavar='')
     parser.add_argument('--obs_pos_noise_std',  default=sd.DEFAULT_OBS_POS_NOISE_STD, type=float, help='Meters of Gaussian noise added to the logged tx-x/ty-y/tz-z columns only (not reward, not control); default: 0.0 = off', metavar='')
+    parser.add_argument('--direction',          default='both', type=str, choices=['both', 'ccw', 'cw'], help="Traversal direction: 'both' alternates each shape half CCW / half CW (default), 'ccw'/'cw' force one", metavar='')
     ARGS = parser.parse_args()
 
     collect(**vars(ARGS))

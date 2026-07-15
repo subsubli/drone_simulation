@@ -8,8 +8,10 @@ import matplotlib.pyplot as plt
 import shape_dataset as sd
 from evaluate_trained_policy import load_policy, load_normalization, make_policy_fn
 
-RUN = sys.argv[1] if len(sys.argv) > 1 else sys.exit("usage: python viz_paths.py <RUN_DIR> [seed]")
+RUN = sys.argv[1] if len(sys.argv) > 1 else sys.exit("usage: python viz_paths.py <RUN_DIR> [seed] [ccw|cw]")
 SEED = int(sys.argv[2]) if len(sys.argv) > 2 else 500
+DIR = sys.argv[3] if len(sys.argv) > 3 else 'ccw'   # 'ccw' or 'cw'
+CW = (DIR == 'cw')
 cfg = json.load(open(os.path.join(RUN, 'config.json')))
 inc_prev = bool(cfg.get('include_prev_action')); inc_la = bool(cfg.get('include_lookahead'))
 mean, std, ab = load_normalization(RUN)
@@ -20,7 +22,7 @@ for k, shape in enumerate(['triangle', 'square', 'pentagon', 'circle']):
     fn = make_policy_fn(policy, mean, std, slew_max_accel=2.0,
                         include_prev_action=inc_prev, include_lookahead=inc_la)
     sd.run(shape=shape, seed=SEED, gui=False, policy_fn=fn, plot_path=True,
-           att_d_gain_scale=0.3, output_folder='/tmp/_viz_junk3')
+           att_d_gain_scale=0.3, output_folder='/tmp/_viz_junk3', clockwise=CW)
     src = plt.gcf().axes[0]                 # the axes plot_path just drew (full target + actual)
     tgt_line, act_line = src.lines[0], src.lines[1]
     ax = big.add_subplot(2, 2, k + 1, projection='3d')
@@ -35,7 +37,7 @@ for k, shape in enumerate(['triangle', 'square', 'pentagon', 'circle']):
     if k == 0: ax.legend(fontsize=8)
     plt.close(plt.get_fignums()[0] if plt.get_fignums()[0] != big.number else plt.get_fignums()[-1])
 
-big.suptitle('Does the policy traverse the WHOLE shape? (full target path vs flown, top-down)', fontsize=13)
+big.suptitle(f'Policy traversal ({DIR.upper()}, seed {SEED}) — full target path (--) vs flown (blue), top-down', fontsize=13)
 big.tight_layout()
-OUT = 'policy_paths.png'
+OUT = f'policy_paths_{DIR}.png'
 big.savefig(OUT, dpi=110); print(f"saved {os.path.abspath(OUT)}")

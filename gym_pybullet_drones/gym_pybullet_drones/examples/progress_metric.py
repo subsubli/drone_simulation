@@ -9,12 +9,14 @@ from evaluate_trained_policy import load_policy, load_normalization, make_policy
 RUN = sys.argv[1] if len(sys.argv) > 1 else \
     '/Users/hanjakp/drone_simulation/IQL-PyTorch-main/runs/merged/07-14-26_21.31.07_lwyv_multishape'
 SEED = int(sys.argv[2]) if len(sys.argv) > 2 else 500
+DIR = sys.argv[3] if len(sys.argv) > 3 else 'ccw'   # 'ccw' or 'cw'
+CW = (DIR == 'cw')
 cfg = json.load(open(os.path.join(RUN, 'config.json')))
 include_prev = bool(cfg.get('include_prev_action'))
 include_la = bool(cfg.get('include_lookahead'))
 mean, std, ab = load_normalization(RUN)
 policy = load_policy(RUN, max_action=ab)
-print(f"RUN={os.path.basename(RUN)}  include_prev_action={include_prev}  include_lookahead={include_la}")
+print(f"RUN={os.path.basename(RUN)}  include_prev_action={include_prev}  include_lookahead={include_la}  dir={DIR}")
 print(f"{'shape':10s} {'coverage':>9s} {'net laps':>9s}  verdict")
 for shape in ['triangle', 'square', 'pentagon', 'circle']:
     fn = make_policy_fn(policy, mean, std, slew_max_accel=2.0,
@@ -25,7 +27,7 @@ for shape in ['triangle', 'square', 'pentagon', 'circle']:
         tv, ci = _o(self, cur_pos); _r.append(ci); return tv, ci
     sd.PurePursuitTracker.step = patched
     try:
-        sd.run(shape=shape, seed=SEED, gui=False, policy_fn=fn, att_d_gain_scale=0.3, output_folder='/tmp/_prog_junk')
+        sd.run(shape=shape, seed=SEED, gui=False, policy_fn=fn, att_d_gain_scale=0.3, output_folder='/tmp/_prog_junk', clockwise=CW)
     finally:
         sd.PurePursuitTracker.step = orig
     rec = np.array(rec); N = 3000

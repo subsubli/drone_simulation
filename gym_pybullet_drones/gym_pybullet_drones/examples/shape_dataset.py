@@ -73,7 +73,10 @@ from gym_pybullet_drones.utils.Logger import Logger
 from gym_pybullet_drones.utils.utils import sync, str2bool
 
 #### Regular polygons approximating each shape, by number of sides ##########
-SHAPE_SIDES = {'triangle': 3, 'square': 4, 'pentagon': 5, 'circle': 72}
+SHAPE_SIDES = {'triangle': 3, 'square': 4, 'pentagon': 5, 'circle': 72, 'star': 10}
+STAR_INNER_RATIO = 0.45  # star's inner-vertex radius as a fraction of the outer radius (5-pointed
+# star = 10 vertices with radius alternating outer/inner). A concave shape the policy never trained
+# on -- used to test generalization to a genuinely new shape family.
 
 DEFAULT_DRONE = DroneModel("cf2x")
 DEFAULT_SHAPE = 'triangle'
@@ -100,6 +103,21 @@ DEFAULT_LOOKAHEAD_DIST = 0.3  # meters. (Tried 0.5 to ease corner stalls -- it f
 # so reverted. Corner traversal is addressed via corner-focused DAgger instead. Kept as the
 # default so collection/DAgger/eval/progress all use the same value -- the lookahead lx/ly/lz
 # state feature is only consistent if this matches everywhere.)
+DEFAULT_ADAPTIVE_LOOKAHEAD_K = 0.0  # 0 = fixed look-ahead (original). >0 shrinks the look-ahead
+# in proportion to off-path deviation: eff_steps = lookahead_steps / (1 + k*deviation). Motivation:
+# with a fixed look-ahead, a large off-path error keeps the forward component competitive with the
+# recovery pull, so pure-pursuit keeps advancing instead of returning and spirals outward at corners
+# (measured: kick 0.2m -> action nearly perpendicular to the return direction, |pos_err| barely
+# shrinks). Shrinking look-ahead with deviation makes far-off-path targets approach the closest
+# point (near-pure recovery) while on-path keeps full forward progress. NOTE: changing this changes
+# the logged lx/ly/lz state feature, so collection/DAgger/eval must all use the SAME k.
+DEFAULT_ADAPTIVE_SLEW_K = 0.0  # 0 = fixed slew-rate cap (original). >0 RELAXES the slew cap in
+# proportion to off-path deviation: eff_max_delta_v = max_delta_v * (1 + k*deviation). Motivation
+# (measured): after a kick the raw target already points almost perfectly back to the path
+# (cos~0.99) at full speed, but the slew cap crushes the COMMANDED speed to ~1/3 while it rotates
+# prev_target_vel from "forward" to "return", so recovery is slow. Relaxing the cap when far
+# off-path lets the command swing to the return direction fast. Trade-off: a larger commanded
+# accel may exceed what the low-level PID / sim physics can actually track -- logged and checked.
 DEFAULT_OUTPUT_FOLDER = 'results'
 DEFAULT_SEED = None
 DEFAULT_PLOT = False
@@ -151,6 +169,14 @@ def generate_local_shape_waypoints(shape, num_wp, radius, side_jitter, rng):
         #### speed limit downstream (e.g. compute_time_optimal_speed_profile).
         n_sides = num_wp
         vertex_radii = np.full(n_sides, radius)
+    elif shape == 'star':
+        #### 5-pointed star: 10 vertices at evenly-spaced angles (36 deg apart), radius
+        #### ALTERNATING between the outer radius and radius*STAR_INNER_RATIO -- that alternation
+        #### is what makes the concave star points. Still built with the same angle-increasing,
+        #### arc-length-resampled machinery as the convex shapes below.
+        n_sides = SHAPE_SIDES['star']
+        base = np.where(np.arange(n_sides) % 2 == 0, radius, radius * STAR_INNER_RATIO)
+        vertex_radii = base * (1 + rng.uniform(-side_jitter, side_jitter, size=n_sides))
     else:
         n_sides = SHAPE_SIDES[shape]
         vertex_radii = radius * (1 + rng.uniform(-side_jitter, side_jitter, size=n_sides))
@@ -277,7 +303,8 @@ class PurePursuitTracker:
 
     """
 
-    def __init__(self, path, speed_profile, lookahead_steps, max_speed, max_accel, control_freq_hz):
+    def __init__(self, path, speed_profile, lookahead_steps, max_speed, max_accel, control_freq_hz,
+                 adaptive_lookahead_k=0.0, adaptive_slew_k=0.0):
         self.path = path
         self.speed_profile = speed_profile
         self.n = len(path)
@@ -285,11 +312,37 @@ class PurePursuitTracker:
         self.max_speed = max_speed
         self.max_delta_v = max_accel / control_freq_hz
         self.prev_target_vel = np.zeros(3)
+        #### Adaptive look-ahead gain: >0 shrinks the look-ahead as the off-path deviation
+        #### grows (see step()). 0 = fixed look-ahead (original behavior).
+        self.adaptive_lookahead_k = adaptive_lookahead_k
+        #### Adaptive slew gain: >0 relaxes the per-step slew cap as deviation grows (see step()).
+        #### 0 = fixed slew cap (original behavior). This is the actual fix for the kick-recovery
+        #### spiral (the raw target is already correct; the slew cap was throttling the return).
+        self.adaptive_slew_k = adaptive_slew_k
+        #### Diagnostics for the physical-plausibility check: the last commanded per-step velocity
+        #### change (|target_vel - prev|) and the effective cap that allowed it, in m/s.
+        self.last_commanded_dv = 0.0
+        self.last_eff_max_delta_v = self.max_delta_v
 
     def step(self, cur_pos):
         """Returns (target_vel, closest_idx) for the drone's current position."""
         closest_idx = int(np.argmin(np.linalg.norm(self.path - cur_pos, axis=1)))
-        lookahead_idx = (closest_idx + self.lookahead_steps) % self.n
+        #### Adaptive look-ahead: the look-ahead vector is (forward component ~ lookahead_dist)
+        #### + (recovery component ~ deviation). With a FIXED look-ahead, once the drone is far
+        #### off-path the fixed-length forward component keeps "go forward" competitive with the
+        #### growing recovery pull, so pure-pursuit keeps advancing along the path instead of
+        #### returning -- at a corner this compounds into an outward spiral. Shrinking the
+        #### look-ahead in proportion to the deviation makes the target point approach the
+        #### CLOSEST point (near-pure recovery) when far off, while restoring the full look-ahead
+        #### (forward progress) once back on-path. eff_steps = lookahead_steps / (1 + k*deviation).
+        #### deviation = distance to the closest path point (= |pos_err|); shared by adaptive
+        #### look-ahead (here) and adaptive slew (below).
+        deviation = float(np.linalg.norm(self.path[closest_idx] - cur_pos))
+        if self.adaptive_lookahead_k > 0:
+            eff_steps = max(1, int(self.lookahead_steps / (1.0 + self.adaptive_lookahead_k * deviation)))
+        else:
+            eff_steps = self.lookahead_steps
+        lookahead_idx = (closest_idx + eff_steps) % self.n
         to_lookahead = self.path[lookahead_idx] - cur_pos
         dist = np.linalg.norm(to_lookahead)
         direction = to_lookahead / dist if dist > 1e-6 else np.zeros(3)
@@ -309,16 +362,23 @@ class PurePursuitTracker:
 
         prev_speed = np.linalg.norm(self.prev_target_vel)
         raw_speed = np.linalg.norm(raw_target_vel)
+        #### Base slew cap, optionally RELAXED when far off-path (adaptive_slew_k>0) so the command
+        #### can swing to the already-correct raw return direction fast instead of being throttled.
+        base_max_delta_v = (self.max_delta_v * (1.0 + self.adaptive_slew_k * deviation)
+                            if self.adaptive_slew_k > 0 else self.max_delta_v)
         if raw_speed > prev_speed and self.max_speed > 0:
             #### Less and less accel headroom left as we approach max_speed ####
             headroom = max(0.0, 1 - (prev_speed / self.max_speed) ** 2)
-            max_delta_v = self.max_delta_v * headroom
+            max_delta_v = base_max_delta_v * headroom
         else:
-            max_delta_v = self.max_delta_v  # braking is never limited by the taper
+            max_delta_v = base_max_delta_v  # braking is never limited by the taper
 
         delta = raw_target_vel - self.prev_target_vel
         dmag = np.linalg.norm(delta)
         target_vel = self.prev_target_vel + delta * min(1, max_delta_v / max(dmag, 1e-9))
+        #### Diagnostics for the physical-plausibility check (commanded per-step dv & the cap used).
+        self.last_commanded_dv = float(np.linalg.norm(target_vel - self.prev_target_vel))
+        self.last_eff_max_delta_v = float(max_delta_v)
         self.prev_target_vel = target_vel
         return target_vel, closest_idx
 
@@ -384,6 +444,9 @@ def run(
         perturb_count=DEFAULT_PERTURB_COUNT,
         obs_pos_noise_std=DEFAULT_OBS_POS_NOISE_STD,
         dagger_relabel=False,
+        clockwise=False,
+        adaptive_lookahead_k=DEFAULT_ADAPTIVE_LOOKAHEAD_K,
+        adaptive_slew_k=DEFAULT_ADAPTIVE_SLEW_K,
         ):
     """`policy_fn`, if given, is called each step as `policy_fn(pos_err, state)` and its
     return value is used as `target_vel` instead of the pure-pursuit tracker's -- lets an
@@ -439,6 +502,14 @@ def run(
                                   tilt_deg=np.radians(ep['tilt_deg']),
                                   tilt_axis_deg=np.radians(ep['tilt_axis_deg']),
                                   center=ep['center'])
+    #### clockwise=True reverses the waypoint order so the tracker (which always steps toward
+    #### increasing path indices) traverses the same closed shape in the opposite direction.
+    #### The path is a closed loop, so which point ends up at index 0 (the spawn point) is
+    #### irrelevant. Building half a collection with this flag set gives the policy both
+    #### traversal directions instead of a counter-clockwise-only bias. SPEED_PROFILE and the
+    #### look-ahead vector are computed AFTER this, so they follow the reversed path correctly.
+    if clockwise:
+        TARGET_POS = TARGET_POS[::-1].copy()
     #### Time-optimal speed at each path point given max_speed/max_accel (see docstring) --
     #### not a guessed lap duration, so lap_time is the fastest this shape can be flown.
     #### The profile itself targets speed_margin * (max_speed, max_accel), not the full 100%:
@@ -454,7 +525,8 @@ def run(
 
     perimeter = np.sum(np.linalg.norm(np.roll(TARGET_POS, -1, axis=0) - TARGET_POS, axis=1))
     lookahead_steps = max(1, round(lookahead_dist / (perimeter / path_resolution)))
-    tracker = PurePursuitTracker(TARGET_POS, SPEED_PROFILE, lookahead_steps, max_speed, max_accel, control_freq_hz)
+    tracker = PurePursuitTracker(TARGET_POS, SPEED_PROFILE, lookahead_steps, max_speed, max_accel, control_freq_hz,
+                                  adaptive_lookahead_k=adaptive_lookahead_k, adaptive_slew_k=adaptive_slew_k)
 
     INIT_XYZ = np.array([TARGET_POS[0]])
     INIT_RPY = np.array([[0, 0, 0]])
@@ -590,11 +662,21 @@ def run(
         step_reward = -float(np.linalg.norm(pos_err))
         done = (i == total_steps - 1)
 
-        #### Logged separately from `pos_err` -- reward and the control decision above both
-        #### used the true (noiseless) error; only the CSV's state columns get the noisy
-        #### version, so this can't leak into causal consistency.
-        logged_pos_err = pos_err if obs_pos_noise_std == 0 else (
-            pos_err + rng.normal(0, obs_pos_noise_std, size=3))
+        #### Logged separately from the true values -- reward and the control decision above
+        #### both used the true (noiseless) error/look-ahead; only the CSV's state columns get
+        #### the noisy version, so this can't leak into causal consistency.
+        #### ONE shared position-measurement noise vector is subtracted from BOTH pos_err and
+        #### the look-ahead vector: real GPS/position error shifts the drone's *estimated
+        #### position*, and pos_err (= target - pos) and lookahead (= lookahead_pt - pos) are
+        #### both measured relative to that same position, so a position error of `n` moves
+        #### both by `-n`. Applying independent noise to each (or only to pos_err) would be
+        #### physically inconsistent and let the policy lean on a wrongly-clean look-ahead.
+        if obs_pos_noise_std == 0:
+            logged_pos_err, logged_lookahead = pos_err, lookahead_vec
+        else:
+            pos_noise = rng.normal(0, obs_pos_noise_std, size=3)
+            logged_pos_err = pos_err - pos_noise
+            logged_lookahead = lookahead_vec - pos_noise
 
         writer.writerow([
             i,
@@ -602,7 +684,7 @@ def run(
             *state[3:7],
             *state[10:13],
             *state[13:16],
-            *lookahead_vec,
+            *logged_lookahead,
             *logged_vel,
             step_reward, done,
         ])
@@ -680,7 +762,7 @@ if __name__ == "__main__":
     parser.add_argument('--perturb_prob',       default=DEFAULT_PERTURB_PROB, type=float,      help='Probability this episode gets perturb_count random mid-episode position displacements, to record off-path recovery data (default: 0.0 = off)', metavar='')
     parser.add_argument('--perturb_magnitude',  default=DEFAULT_PERTURB_MAGNITUDE, type=float, help='Max meters of each position displacement when perturbation fires (default: 1.5)', metavar='')
     parser.add_argument('--perturb_count',      default=DEFAULT_PERTURB_COUNT, type=int,       help='Number of independent kicks within an episode that gets perturbed (default: 1)', metavar='')
-    parser.add_argument('--obs_pos_noise_std',  default=DEFAULT_OBS_POS_NOISE_STD, type=float, help='Meters of Gaussian noise added to the logged tx-x/ty-y/tz-z columns only (not reward, not control); default: 0.0 = off', metavar='')
+    parser.add_argument('--obs_pos_noise_std',  default=DEFAULT_OBS_POS_NOISE_STD, type=float, help='Meters of Gaussian position-measurement noise; one shared noise vector is applied to the logged tx-x/ty-y/tz-z AND lx/ly/lz columns (not reward, not control); default: 0.0 = off', metavar='')
     ARGS = parser.parse_args()
 
     run(**vars(ARGS))

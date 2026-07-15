@@ -137,6 +137,10 @@ def main():
     parser.add_argument('--slew_max_accel', type=float, default=None,
                          help='m/s^2 slew-rate cap applied to the policy output at rollout, matching '
                               'the training data collection (default None = off / raw MLP output)')
+    parser.add_argument('--direction', default='both', choices=['both', 'ccw', 'cw'],
+                         help="Traversal direction to evaluate: 'both' rolls out each shape once CCW "
+                              "and once CW (default), 'ccw'/'cw' test one. Use 'both' to confirm the "
+                              "policy generalizes to both directions of the training data.")
     ARGS = parser.parse_args()
 
     with open(os.path.join(ARGS.run_dir, 'config.json')) as f:
@@ -144,27 +148,31 @@ def main():
     obs_mean, obs_std, action_bound = load_normalization(ARGS.run_dir)
     policy = load_policy(ARGS.run_dir, max_action=action_bound)
 
+    dirs = ['ccw', 'cw'] if ARGS.direction == 'both' else [ARGS.direction]
     results = []
     for shape in ARGS.shapes:
-        print(f"[INFO] === {shape} (seed={ARGS.seed}) ===")
-        #### Fresh policy_fn PER SHAPE -- make_policy_fn holds slew/prev state in its closure,
-        #### so reusing one across shapes leaks the previous episode's ending state into the
-        #### next shape's start and corrupts it (was silently inflating square/circle error).
-        policy_fn = make_policy_fn(policy, obs_mean, obs_std, slew_max_accel=ARGS.slew_max_accel,
-                                    include_prev_action=bool(cfg.get('include_prev_action')),
-                                    include_lookahead=bool(cfg.get('include_lookahead')))
-        sd.run(shape=shape, seed=ARGS.seed, gui=False,
-               output_folder=os.path.join(ARGS.output_folder, 'expert'),
-               att_d_gain_scale=ARGS.att_d_gain_scale)
-        sd.run(shape=shape, seed=ARGS.seed, gui=False,
-               output_folder=os.path.join(ARGS.output_folder, 'policy'),
-               att_d_gain_scale=ARGS.att_d_gain_scale, policy_fn=policy_fn)
+        for d in dirs:
+            clockwise = (d == 'cw')
+            label = f"{shape}-{d}" if len(dirs) > 1 else shape
+            print(f"[INFO] === {label} (seed={ARGS.seed}) ===")
+            #### Fresh policy_fn PER SHAPE/DIRECTION -- make_policy_fn holds slew/prev state in its
+            #### closure, so reusing one across rollouts leaks the previous episode's ending state
+            #### into the next start and corrupts it (was silently inflating square/circle error).
+            policy_fn = make_policy_fn(policy, obs_mean, obs_std, slew_max_accel=ARGS.slew_max_accel,
+                                        include_prev_action=bool(cfg.get('include_prev_action')),
+                                        include_lookahead=bool(cfg.get('include_lookahead')))
+            sd.run(shape=shape, seed=ARGS.seed, gui=False,
+                   output_folder=os.path.join(ARGS.output_folder, 'expert'),
+                   att_d_gain_scale=ARGS.att_d_gain_scale, clockwise=clockwise)
+            sd.run(shape=shape, seed=ARGS.seed, gui=False,
+                   output_folder=os.path.join(ARGS.output_folder, 'policy'),
+                   att_d_gain_scale=ARGS.att_d_gain_scale, policy_fn=policy_fn, clockwise=clockwise)
 
-        expert_m = episode_metrics(latest_csv(os.path.join(ARGS.output_folder, 'expert', 'shape_dataset')))
-        policy_m = episode_metrics(latest_csv(os.path.join(ARGS.output_folder, 'policy', 'shape_dataset')))
-        results.append((shape, expert_m, policy_m))
-        print(f"  expert: {expert_m}")
-        print(f"  policy: {policy_m}")
+            expert_m = episode_metrics(latest_csv(os.path.join(ARGS.output_folder, 'expert', 'shape_dataset')))
+            policy_m = episode_metrics(latest_csv(os.path.join(ARGS.output_folder, 'policy', 'shape_dataset')))
+            results.append((label, expert_m, policy_m))
+            print(f"  expert: {expert_m}")
+            print(f"  policy: {policy_m}")
 
     print("\n=== Summary (mean tracking error / mean action smoothness, meters) ===")
     print(f"{'shape':<10} {'expert_err':>12} {'policy_err':>12} {'expert_smooth':>14} {'policy_smooth':>14}")

@@ -34,6 +34,11 @@ def main():
     parser.add_argument('--perturb_count', type=int, default=1)
     parser.add_argument('--perturb_magnitude', type=float, default=1.5)
     parser.add_argument('--output_folder', default='dagger_data')
+    parser.add_argument('--direction', default='both', choices=['both', 'ccw', 'cw'],
+                         help="Traversal direction for the DAgger rollouts: 'both' alternates by "
+                              "seed parity (half CCW / half CW, default), 'ccw'/'cw' force one. "
+                              "Match the initial dataset so the policy sees recovery states in both "
+                              "directions it was trained on.")
     ARGS = parser.parse_args()
 
     with open(os.path.join(ARGS.run_dir, 'config.json')) as f:
@@ -43,6 +48,12 @@ def main():
 
     n_eps = 0
     for seed in range(ARGS.seed_start, ARGS.seed_start + ARGS.n_seeds):
+        #### 'both' toggles direction by seed parity -> each shape (inner loop) gets half its
+        #### seeds CCW and half CW across a contiguous seed range, matching the initial dataset.
+        if ARGS.direction == 'both':
+            clockwise = (seed % 2 == 1)
+        else:
+            clockwise = (ARGS.direction == 'cw')
         for shape in ARGS.shapes:
             #### Fresh policy_fn per episode so the slew-limiter's internal prev-action state
             #### resets at each episode start (it's a stateful closure).
@@ -52,7 +63,7 @@ def main():
             sd.run(shape=shape, seed=seed, gui=False, policy_fn=policy_fn, dagger_relabel=True,
                    att_d_gain_scale=ARGS.att_d_gain_scale, output_folder=ARGS.output_folder,
                    perturb_prob=ARGS.perturb_prob, perturb_count=ARGS.perturb_count,
-                   perturb_magnitude=ARGS.perturb_magnitude)
+                   perturb_magnitude=ARGS.perturb_magnitude, clockwise=clockwise)
             n_eps += 1
     print(f"[INFO] DAgger collection done: {n_eps} episodes -> {ARGS.output_folder}/shape_dataset/")
 

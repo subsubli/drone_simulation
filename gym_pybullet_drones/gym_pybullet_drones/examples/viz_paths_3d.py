@@ -15,6 +15,8 @@ RUN = sys.argv[1] if len(sys.argv) > 1 else None
 if RUN is None:
     sys.exit("usage: python viz_paths_3d.py <RUN_DIR> [seed]")
 SEED = int(sys.argv[2]) if len(sys.argv) > 2 else 500
+DIR = sys.argv[3] if len(sys.argv) > 3 else 'ccw'   # 'ccw' or 'cw'
+CW = (DIR == 'cw')
 
 cfg = json.load(open(os.path.join(RUN, 'config.json')))
 inc_prev = bool(cfg.get('include_prev_action')); inc_la = bool(cfg.get('include_lookahead'))
@@ -31,7 +33,7 @@ for k, shape in enumerate(['triangle', 'square', 'pentagon', 'circle']):
         _a.append(state[0:3].copy()); _t.append(state[0:3] + np.asarray(pos_err))
         return _b(pos_err, state, lookahead)
     sd.run(shape=shape, seed=SEED, gui=False, policy_fn=wrapped, att_d_gain_scale=0.3,
-           output_folder='/tmp/_viz_paths_3d_junk')
+           output_folder='/tmp/_viz_paths_3d_junk', clockwise=CW)
     actual = np.array(actual); target = np.array(target)
     ax = fig.add_subplot(2, 2, k + 1, projection='3d')
     ax.plot(target[:, 0], target[:, 1], target[:, 2], 'k--', lw=1.2, label='target path')
@@ -43,6 +45,6 @@ for k, shape in enumerate(['triangle', 'square', 'pentagon', 'circle']):
     ax.set_xlabel('X'); ax.set_ylabel('Y'); ax.set_zlabel('Z')
     if k == 0:
         ax.legend(fontsize=8)
-fig.suptitle(f'{os.path.basename(RUN)} -- all 4 shapes, seed {SEED}', fontsize=12)
+fig.suptitle(f'{os.path.basename(RUN)} -- all 4 shapes, seed {SEED}, {DIR.upper()}', fontsize=12)
 fig.tight_layout()
 plt.show()
