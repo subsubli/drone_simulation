@@ -114,3 +114,99 @@ User's actual goal (clarified 2026-07-14 evening): the learned policy should gen
 Critical state-design reminder: `target_pos_x/y/z` (or a relative form like `target_pos - pos`) must be included in whatever "state" is fed to the offline-RL policy -- it is NOT optional metadata. Without it the policy has no way to know which direction to move (same raw pos/vel/rpy/ang_vel state maps to different correct actions depending on where the shape's path actually is), making the learning problem ill-posed. Pure per-episode bookkeeping that's safe to exclude from state: `episode_id, step, t, shape, center_x/y/z, start_yaw_deg, tilt_deg, tilt_axis_deg`.
 
 How to apply: when resuming this project, read shape_dataset.py directly for the exact current implementation (this memory may drift from the code over time); use this memory mainly for the *why* behind design choices and the deferred TODO list. Before any real-hardware flight test, treat both (a) attitude-gain retuning for this velocity-only mode and (b) matching `max_speed`/`max_accel` to the real drone's actual thrust-to-weight as prerequisites, independent of how good the trained RL policy is.
+
+---
+
+# Measured Results (tables)
+
+All rollouts on held-out seed 500 (not in training) unless noted. Metric = **net laps** (target 3; ≥~2.5 = full traversal) and **distance error** = mean |pos_err| (m) vs the pure-pursuit expert. "8/8" = 4 shapes × 2 directions all traverse. fbpq/uhsf rows are freshly re-measured; deleted intermediate runs use logged values.
+
+## 1. Final policies — completion (net laps, seed 500)
+
+| shape | **v2 (orig)** CCW | v2 CW | **soft** CCW | soft CW |
+|---|---|---|---|---|
+| triangle | 2.71 | 2.69 | 2.71 | 2.69 |
+| square | 2.92 | 2.96 | 2.94 | 2.98 |
+| pentagon | 3.31 | 3.35 | 3.29 | 3.31 |
+| circle | 2.70 | 2.69 | 2.78 | 2.77 |
+
+Both = 8/8 traverse. (v2 = original data + DAgger×2, `fbpq`; soft = soft data + DAgger×2, `uhsf`.)
+
+## 2. Final policies — distance error (m, seed 500)
+
+| shape·dir | expert | **v2 (orig)** | **soft** |
+|---|---|---|---|
+| triangle-ccw | 0.030 | 0.103 | 0.099 |
+| triangle-cw | 0.030 | 0.098 | 0.114 |
+| square-ccw | 0.018 | 0.124 | 0.125 |
+| square-cw | 0.018 | 0.124 | 0.128 |
+| pentagon-ccw | 0.015 | 0.103 | 0.115 |
+| pentagon-cw | 0.015 | 0.108 | 0.111 |
+| circle-ccw | 0.005 | 0.011 | 0.007 |
+| circle-cw | 0.005 | 0.011 | 0.006 |
+
+Policy ≈ 3–4× the expert's error on cornered shapes (BC approximation gap), ≈1.3–2× on the smooth circle. Both policies effectively equal.
+
+## 3. Multi-seed sweep (seeds 500–503, 16 rollouts each)
+
+| policy | dist_mean | dist_max | net-laps_min |
+|---|---|---|---|
+| v2 (orig, DAgger×2) | 0.080 | 0.124 | 2.67 |
+| soft DAgger×1 | 0.093 | 0.141 | 2.69 |
+| soft DAgger×2 (final) | 0.080 | 0.125 | 2.71 |
+
+Soft DAgger-2 improved on DAgger-1 (0.093→0.080) with NO overfit across held-out seeds.
+
+## 4. DAgger progression — completion (net laps)
+
+| stage | data | tri | sq | pent | circ | verdict |
+|---|---|---|---|---|---|---|
+| **soft** initial-only | 1.5M, no DAgger | 1.87/1.66 | 2.08/**0.72** | 2.44/**0.76** | 1.75/**0.69** | NOT complete |
+| soft + DAgger×1 | +240 eps | ~2.7–3.3 both | ✓ | ✓ | ✓ | 8/8 |
+| soft + DAgger×2 (final) | +240 eps | 2.71/2.69 | 2.94/2.98 | 3.29/3.31 | 2.78/2.77 | 8/8 |
+| **orig** v1 (DAgger×1) | 2.36M | ok | **1.02/0.85** | ok | ok | square fails |
+| orig v2 (DAgger×2, final) | 2.78M | 2.71/2.69 | 2.92/2.96 | 3.31/3.35 | 2.70/2.69 | 8/8 |
+| **100k** initial-only | 100k, no DAgger | 0.64/– | 0.54/– | 0.62/– | 0.55/– | STUCK |
+| 100k + small DAgger | +80 eps | 2.71/2.66 | 2.94/2.91 | 3.23/3.25 | 2.79/2.80 | 8/8 (revived) |
+
+(cells shown as CCW/CW; bold = failing.) Pattern: completion is gated by DAgger, not by initial-data volume.
+
+## 5. Ablation — look-ahead removed (50k, no `--include-lookahead`)
+
+| | net-laps mean | net-laps min | dist |
+|---|---|---|---|
+| with look-ahead | +2.89 | +2.67 | ~0.08 m |
+| **without** look-ahead | **−0.14** | **−0.59** | ~0.34 m (near path, no progress) |
+
+Look-ahead (lx/ly/lz) is essential: without it the policy wanders/reverses.
+
+## 6. Star generalization (untrained shape, soft policy, seed 500)
+
+| dir | net laps | policy dist | expert dist | policy/expert |
+|---|---|---|---|---|
+| CCW | 3.36 | 0.142 | 0.036 | 3.9× |
+| CW | 3.39 | 0.144 | 0.036 | 4.0× |
+
+Ratio comparable to trained shapes (triangle 3.3×, circle 1.4×) → star's larger absolute error is its 2× corner count, not a generalization failure. A never-trained shape is fully traversed.
+
+## 7. Dataset statistics (1.5M each, both directions)
+
+| | original | soft |
+|---|---|---|
+| perturbation | prob 1.0 / count 6 / mag 1.5 | prob 0.1 / count 2 / mag 0.3 |
+| on-path (≤0.2m) | 21.2% | **93.2%** |
+| off-path (>0.2m) | 78.8% | 6.8% |
+| median \|pos_err\| | 3.33 m | **0.006 m** |
+| max \|pos_err\| | 38.1 m | 5.7 m |
+| episodes (CCW/CW) | 423 (212/211) | 423 (212/211) |
+
+## 8. Kick-recovery spiral — adaptive-slew sweep (triangle, kicked episode)
+
+| adaptive_slew_k | net laps | pos_err max (m) |
+|---|---|---|
+| 0 (off) | 0.55 | 2.39 |
+| 2 | 0.77 | 2.69 |
+| 5 | 0.77 | 4.33 |
+| 10 | 0.19 | 2.69 |
+
+Relaxing the slew cap makes the raw return command reach full speed instantly (|tv| 0.44→1.4, physically tracked) but causes OVERSHOOT, so net-laps doesn't improve — corner recovery without overshoot is an intrinsic pure-pursuit+inertia limit. Diagnosis: after a kick, raw target already points back at cos 0.99; the slew cap (not look-ahead) throttled the return.
