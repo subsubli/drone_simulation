@@ -447,6 +447,7 @@ def run(
         clockwise=False,
         adaptive_lookahead_k=DEFAULT_ADAPTIVE_LOOKAHEAD_K,
         adaptive_slew_k=DEFAULT_ADAPTIVE_SLEW_K,
+        fixed_tilt_deg=None,
         ):
     """`policy_fn`, if given, is called each step as `policy_fn(pos_err, state)` and its
     return value is used as `target_vel` instead of the pure-pursuit tracker's -- lets an
@@ -495,6 +496,10 @@ def run(
 
     #### Sample this episode's placement and build the path ####
     ep = sample_episode_params(shape, radius, side_jitter, tilt_max_deg, workspace_size, DEFAULT_FLOOR_CLEARANCE, rng)
+    #### fixed_tilt_deg overrides the randomly-sampled plane tilt (e.g. 90 = a vertical-plane
+    #### shape) -- used to test whether the policy generalizes to steep out-of-plane paths.
+    if fixed_tilt_deg is not None:
+        ep['tilt_deg'] = float(fixed_tilt_deg)
 
     local_pts = generate_local_shape_waypoints(shape, path_resolution, radius, side_jitter, rng)
     TARGET_POS = place_waypoints(local_pts,
