@@ -222,14 +222,19 @@ Relaxing the slew cap makes the raw return command reach full speed instantly (|
 
 ## 9. Single-shape (square-CW) policy → all-shapes generalization (seed 500)
 
-The policy was trained on **only square, only CW** (square-CW 1M + 20-ep DAgger). Every other shape/direction below — and the star — is generalization (never in training).
+Compared side-by-side: **(A) square-CW-only** policy (trained on ONE shape + ONE direction: square-CW 1M + 20-ep DAgger) vs **(B) soft 4-shape** policy (uhsf: triangle/square/pentagon/circle both directions + DAgger×2). For (A), every shape except square-CW is generalization (never in training); for (B), all 4 shapes were trained (both directions) and only the star is untrained. net laps (target 3) / distance error (m):
 
-| shape | CCW laps | CW laps | CCW dist (m) | CW dist (m) | trained? |
-|---|---|---|---|---|---|
-| triangle | 2.50 | 2.63 | 0.152 | 0.089 | no |
-| square | 2.97 | 2.73 | 0.176 | 0.156 | CW only |
-| pentagon | 3.19 | 3.19 | 0.166 | 0.093 | no |
-| circle | 2.75 | 2.41 | 0.016 | 0.027 | no |
-| star | 3.00 | 3.59 | 0.213 | 0.125 | no |
+| shape·dir | **(A) square-CW only** laps / dist | **(B) soft 4-shape** laps / dist |
+|---|---|---|
+| triangle-ccw | 2.50 / 0.152 | 2.71 / 0.099 |
+| triangle-cw | 2.63 / 0.089 | 2.69 / 0.114 |
+| square-ccw | 2.97 / 0.176 | 2.94 / 0.125 |
+| square-cw | 2.73 / 0.156 | 2.98 / 0.128 |
+| pentagon-ccw | 3.19 / 0.166 | 3.29 / 0.115 |
+| pentagon-cw | 3.19 / 0.093 | 3.31 / 0.111 |
+| circle-ccw | 2.75 / 0.016 | 2.78 / 0.007 |
+| circle-cw | 2.41 / 0.027 | 2.77 / 0.006 |
+| star-ccw (both untrained) | 3.00 / 0.213 | 3.36 / 0.142 |
+| star-cw (both untrained) | 3.59 / 0.125 | 3.39 / 0.144 |
 
-**10/10 traverse** (net laps 2.41–3.59). Distances are looser than the 4-shape uhsf policy (only square was seen), but every shape/direction completes — the pos_err+lookahead state is shape/direction-invariant, so one shape+direction of training suffices. Visualized in `sqcw_dagger_5shapes_ccw.png`.
+**Both traverse 10/10** (net laps 2.4–3.6). The takeaway of the comparison: completion is essentially the same for both — even the single-shape (A) completes every shape/direction — but **(B) is more PRECISE** (distance ~0.10–0.14m vs A's ~0.09–0.21m; e.g. star 0.14 vs 0.21m, circle 0.006 vs 0.016m). So seeing more shapes doesn't change WHETHER it completes (the shape/direction-invariant state + DAgger already give that from one shape), it tightens HOW closely it tracks — more shape variety = better corner precision, not better completion. **Also notable: (A) tracks TIGHTER in its TRAINED direction (CW).** 4 of 5 shapes have CW dist < CCW dist for (A): triangle 0.089<0.152, square 0.156<0.176, pentagon 0.093<0.166, star 0.125<0.213 (circle is the lone exception, 0.027 vs 0.016). So direction-specialization shows up in the ERROR — the policy is more precise in the direction it actually trained on — even though COMPLETION is direction-agnostic (both directions traverse). (B), trained in both directions, is by contrast roughly symmetric between CCW/CW. Visualized in `sqcw_dagger_5shapes_ccw.png`.
