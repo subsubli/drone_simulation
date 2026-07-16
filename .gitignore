@@ -6,7 +6,6 @@
 # per-episode shape_dataset archives are local-only (regenerable; the merged .csv.gz is enough)
 *.tar.gz
 *.zip
-*.pt
 *.npz
 *.log
 policy_paths.png
