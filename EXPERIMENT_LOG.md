@@ -133,17 +133,17 @@ How to apply: when resuming this project, read shape_dataset.py directly for the
 
 All rollouts on held-out seed 500 (not in training) unless noted. Metric = **net laps** (target 3; ≥~2.5 = full traversal) and **distance error** = mean |pos_err| (m) vs the pure-pursuit expert. "8/8" = 4 shapes × 2 directions all traverse. fbpq/uhsf rows are freshly re-measured; deleted intermediate runs use logged values.
 
-## 1. Final policies — completion (net laps; seeds 500–509 × both directions = 20 rollouts/shape, normal random tilt)
+## 1. Final policies — completion + distance (seeds 500–509 × both directions = 20 rollouts/shape, normal random tilt)
 
-soft = soft data + DAgger×2 (`uhsf`); orig = original data + DAgger×2 (`fbpq`). Traverse = net laps ≥ 2.0. mean±std (min, traverse-count):
+soft = soft data + DAgger×2 (`uhsf`); orig = original data + DAgger×2 (`fbpq`). Traverse = net laps ≥ 2.0. **net laps** mean±std (min, traverse-count) and **distance error (m)** mean±std. Expert distance ≈ 0.005–0.03m.
 
-| shape | **soft** mean±std (min, trav) | **orig** mean±std (min, trav) |
-|---|---|---|
-| triangle | 2.70±0.02 (2.65, 20/20) | 2.67±0.06 (2.44, 20/20) |
-| square | 2.98±0.03 (2.91, 20/20) | 2.70±0.76 (0.21, **18/20**) |
-| pentagon | 3.28±0.04 (3.21, 20/20) | 3.12±0.62 (0.43, **19/20**) |
-| circle | 2.76±0.02 (2.72, 20/20) | 2.64±0.08 (2.38, 20/20) |
-| star *(untrained)* | 3.24±0.16 (3.00, 20/20) | 3.21±0.12 (3.00, 20/20) |
+| shape | **soft** laps (min, trav) | **orig** laps (min, trav) | **soft** dist | **orig** dist |
+|---|---|---|---|---|
+| triangle | 2.70±0.02 (2.65, 20/20) | 2.67±0.06 (2.44, 20/20) | 0.100±0.010 | 0.097±0.009 |
+| square | 2.98±0.03 (2.91, 20/20) | 2.70±0.76 (0.21, **18/20**) | 0.114±0.008 | **0.366±0.903** |
+| pentagon | 3.28±0.04 (3.21, 20/20) | 3.12±0.62 (0.43, **19/20**) | 0.109±0.007 | **0.183±0.344** |
+| circle | 2.76±0.02 (2.72, 20/20) | 2.64±0.08 (2.38, 20/20) | 0.007±0.001 | 0.013±0.003 |
+| star *(untrained)* | 3.24±0.16 (3.00, 20/20) | 3.21±0.12 (3.00, 20/20) | 0.145±0.009 | 0.138±0.009 |
 
 **Key finding (only visible with the seed sweep): soft = 100/100 traverse, orig = 97/100.** soft completes every shape on every seed with tiny variance; orig has **intermittent held-out blow-ups** on square (18/20) and pentagon (19/20). The clean soft baseline is markedly MORE ROBUST across seeds — single-seed(500) numbers hid this. (star is untrained for both → generalization.)
 
