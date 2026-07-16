@@ -133,31 +133,33 @@ How to apply: when resuming this project, read shape_dataset.py directly for the
 
 All rollouts on held-out seed 500 (not in training) unless noted. Metric = **net laps** (target 3; ≥~2.5 = full traversal) and **distance error** = mean |pos_err| (m) vs the pure-pursuit expert. "8/8" = 4 shapes × 2 directions all traverse. fbpq/uhsf rows are freshly re-measured; deleted intermediate runs use logged values.
 
-## 1. Final policies — completion (net laps, seed 500)
+## 1. Final policies — completion (net laps; seeds 500–509 × both directions = 20 rollouts/shape, normal random tilt)
 
-| shape | **v2 (orig)** CCW | v2 CW | **soft** CCW | soft CW |
-|---|---|---|---|---|
-| triangle | 2.71 | 2.69 | 2.71 | 2.69 |
-| square | 2.92 | 2.96 | 2.94 | 2.98 |
-| pentagon | 3.31 | 3.35 | 3.29 | 3.31 |
-| circle | 2.70 | 2.69 | 2.78 | 2.77 |
+soft = soft data + DAgger×2 (`uhsf`); orig = original data + DAgger×2 (`fbpq`). Traverse = net laps ≥ 2.0. mean±std (min, traverse-count):
 
-Both = 8/8 traverse. (v2 = original data + DAgger×2, `fbpq`; soft = soft data + DAgger×2, `uhsf`.)
+| shape | **soft** mean±std (min, trav) | **orig** mean±std (min, trav) |
+|---|---|---|
+| triangle | 2.70±0.02 (2.65, 20/20) | 2.67±0.06 (2.44, 20/20) |
+| square | 2.98±0.03 (2.91, 20/20) | 2.70±0.76 (0.21, **18/20**) |
+| pentagon | 3.28±0.04 (3.21, 20/20) | 3.12±0.62 (0.43, **19/20**) |
+| circle | 2.76±0.02 (2.72, 20/20) | 2.64±0.08 (2.38, 20/20) |
+| star *(untrained)* | 3.24±0.16 (3.00, 20/20) | 3.21±0.12 (3.00, 20/20) |
 
-## 2. Final policies — distance error (m, seed 500)
+**Key finding (only visible with the seed sweep): soft = 100/100 traverse, orig = 97/100.** soft completes every shape on every seed with tiny variance; orig has **intermittent held-out blow-ups** on square (18/20) and pentagon (19/20). The clean soft baseline is markedly MORE ROBUST across seeds — single-seed(500) numbers hid this. (star is untrained for both → generalization.)
 
-| shape·dir | expert | **v2 (orig)** | **soft** |
-|---|---|---|---|
-| triangle-ccw | 0.030 | 0.103 | 0.099 |
-| triangle-cw | 0.030 | 0.098 | 0.114 |
-| square-ccw | 0.018 | 0.124 | 0.125 |
-| square-cw | 0.018 | 0.124 | 0.128 |
-| pentagon-ccw | 0.015 | 0.103 | 0.115 |
-| pentagon-cw | 0.015 | 0.108 | 0.111 |
-| circle-ccw | 0.005 | 0.011 | 0.007 |
-| circle-cw | 0.005 | 0.011 | 0.006 |
+## 2. Final policies — distance error (m; seeds 500–509 × both dirs, 20 rollouts/shape)
 
-Policy ≈ 3–4× the expert's error on cornered shapes (BC approximation gap), ≈1.3–2× on the smooth circle. Both policies effectively equal.
+mean±std (max). Expert reference ≈ 0.005–0.03m.
+
+| shape | **soft** mean±std (max) | **orig** mean±std (max) |
+|---|---|---|
+| triangle | 0.100±0.010 (0.127) | 0.097±0.009 (0.118) |
+| square | 0.114±0.008 (0.128) | 0.366±0.903 (**4.17**) |
+| pentagon | 0.109±0.007 (0.128) | 0.183±0.344 (1.68) |
+| circle | 0.007±0.001 (0.009) | 0.013±0.003 (0.022) |
+| star *(untrained)* | 0.145±0.009 (0.173) | 0.138±0.009 (0.149) |
+
+soft's error is tight and low-variance everywhere; orig's square/pentagon variance is huge (max 4.17m) from the same intermittent blow-ups. On seeds where both complete the precision is comparable (~3–4× expert on corners, ~1.5–2× on the circle) — the difference is entirely orig's occasional failures, i.e. robustness, not average precision.
 
 ## 3. Multi-seed sweep (seeds 500–503, 16 rollouts each)
 
