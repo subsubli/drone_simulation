@@ -1,0 +1,2 @@
+[22:38:15] Log dir: /Users/hanjakp/drone_simulation/IQL-PyTorch-main/runs_soft_initial/merged1.5M_soft/07-16-26_22.38.15_mroc
+[22:38:27] off-path rows (|pos_err|>0.2): 102458 / 1502261 (6.82%)

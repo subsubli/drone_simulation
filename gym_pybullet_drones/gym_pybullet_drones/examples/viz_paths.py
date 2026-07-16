@@ -17,15 +17,15 @@ inc_prev = bool(cfg.get('include_prev_action')); inc_la = bool(cfg.get('include_
 mean, std, ab = load_normalization(RUN)
 policy = load_policy(RUN, max_action=ab)
 
-big = plt.figure(figsize=(14, 12))
-for k, shape in enumerate(['triangle', 'square', 'pentagon', 'circle']):
+big = plt.figure(figsize=(18, 11))
+for k, shape in enumerate(['triangle', 'square', 'pentagon', 'circle', 'star']):
     fn = make_policy_fn(policy, mean, std, slew_max_accel=2.0,
                         include_prev_action=inc_prev, include_lookahead=inc_la)
     sd.run(shape=shape, seed=SEED, gui=False, policy_fn=fn, plot_path=True,
            att_d_gain_scale=0.3, output_folder='/tmp/_viz_junk3', clockwise=CW)
     src = plt.gcf().axes[0]                 # the axes plot_path just drew (full target + actual)
     tgt_line, act_line = src.lines[0], src.lines[1]
-    ax = big.add_subplot(2, 2, k + 1, projection='3d')
+    ax = big.add_subplot(2, 3, k + 1, projection='3d')
     ax.plot(*tgt_line.get_data_3d(), 'k--', lw=1.2, label='FULL target path')
     ax.plot(*act_line.get_data_3d(), 'b-', lw=1.0, alpha=0.8, label='policy flown')
     import numpy as np

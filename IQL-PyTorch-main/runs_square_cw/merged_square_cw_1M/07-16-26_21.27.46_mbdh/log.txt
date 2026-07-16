@@ -1,0 +1,5 @@
+[21:27:46] Log dir: /Users/hanjakp/drone_simulation/IQL-PyTorch-main/runs_square_cw/merged_square_cw_1M/07-16-26_21.27.46_mbdh
+[21:27:55] off-path rows (|pos_err|>0.2): 51546 / 1004212 (5.13%)
+[21:31:53] {'step': 100000, 'v_loss': 0.0025179190561175346, 'q_loss': 0.08267802000045776, 'policy_loss': -6.686362266540527}
+[21:35:53] {'step': 200000, 'v_loss': 0.0005157190025784075, 'q_loss': 0.005311126820743084, 'policy_loss': -9.805485725402832}
+[21:39:50] {'step': 300000, 'v_loss': 0.009031211026012897, 'q_loss': 0.058569613844156265, 'policy_loss': -9.751152992248535}

@@ -23,8 +23,8 @@ inc_prev = bool(cfg.get('include_prev_action')); inc_la = bool(cfg.get('include_
 mean, std, ab = load_normalization(RUN)
 policy = load_policy(RUN, max_action=ab)
 
-fig = plt.figure(figsize=(13, 11))
-for k, shape in enumerate(['triangle', 'square', 'pentagon', 'circle']):
+fig = plt.figure(figsize=(17, 10))
+for k, shape in enumerate(['triangle', 'square', 'pentagon', 'circle', 'star']):
     actual, target = [], []
     #### Fresh policy_fn PER shape -- make_policy_fn holds slew/prev state in its closure.
     base = make_policy_fn(policy, mean, std, slew_max_accel=2.0,
@@ -35,7 +35,7 @@ for k, shape in enumerate(['triangle', 'square', 'pentagon', 'circle']):
     sd.run(shape=shape, seed=SEED, gui=False, policy_fn=wrapped, att_d_gain_scale=0.3,
            output_folder='/tmp/_viz_paths_3d_junk', clockwise=CW)
     actual = np.array(actual); target = np.array(target)
-    ax = fig.add_subplot(2, 2, k + 1, projection='3d')
+    ax = fig.add_subplot(2, 3, k + 1, projection='3d')
     ax.plot(target[:, 0], target[:, 1], target[:, 2], 'k--', lw=1.2, label='target path')
     ax.plot(actual[:, 0], actual[:, 1], actual[:, 2], 'b-', lw=1.2, label='policy flown')
     allp = np.vstack([target, actual]); mid = (allp.min(0) + allp.max(0)) / 2
