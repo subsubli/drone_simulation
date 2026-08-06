@@ -52,12 +52,17 @@ class TemporalDenoiser(nn.Module):
 
     depth controls how many residual conv blocks stack in the middle; ch is width. For the
     quality run we go wider (ch=128) and deeper (depth=6) than the fast CPU baseline (64/3)."""
-    def __init__(self, feat, H, ch=128, depth=6):
+    def __init__(self, feat, H, ch=128, depth=6, dilated=False):
         super().__init__()
         self.H = H
         self.inp = nn.Conv1d(feat, ch, 5, padding=2)
-        self.blocks = nn.ModuleList([nn.Sequential(
-            nn.Conv1d(ch, ch, 5, padding=2), nn.GroupNorm(8, ch), nn.SiLU()) for _ in range(depth)])
+        #### dilated=True grows dilation 1,2,4,8,16,... so the receptive field spans the whole window
+        #### (kernel 5, depth 6 -> RF ~33 < H=64 when undilated; dilation lifts RF past 64).
+        self.blocks = nn.ModuleList()
+        for i in range(depth):
+            d = (2 ** (i % 5)) if dilated else 1
+            self.blocks.append(nn.Sequential(
+                nn.Conv1d(ch, ch, 5, padding=2 * d, dilation=d), nn.GroupNorm(8, ch), nn.SiLU()))
         self.out = nn.Conv1d(ch, feat, 5, padding=2)
         self.temb = nn.Linear(1, ch)
 
@@ -87,6 +92,17 @@ def main():
     ap.add_argument('--lr', type=float, default=2e-4)
     ap.add_argument('--warmup', type=int, default=1000)
     ap.add_argument('--lr-min', type=float, default=1e-5)
+    ap.add_argument('--lambda-cons', type=float, default=0.1,
+                    help='weight of the pos_err<->vel physical-consistency loss (0 disables)')
+    ap.add_argument('--act-cap', type=float, default=0.0,
+                    help='cap generated |action| at this m/s; <=0 uses the real data max')
+    ap.add_argument('--pe-asinh', type=float, default=0.0,
+                    help='asinh(pos_err/scale) transform to de-tail pos_err before normalizing; 0=off, e.g. 0.05')
+    ap.add_argument('--dilated', action='store_true',
+                    help='dilated conv blocks (1,2,4,8,16) to expand the temporal receptive field past H')
+    ap.add_argument('--sampler', choices=['ddpm', 'ddim'], default='ddpm')
+    ap.add_argument('--ddim-steps', type=int, default=100, help='reverse steps for DDIM (subsampled from T)')
+    ap.add_argument('--eta', type=float, default=0.0, help='DDIM stochasticity (0=deterministic)')
     A = ap.parse_args()
     if torch.cuda.is_available():
         dev = 'cuda'
@@ -96,14 +112,33 @@ def main():
         dev = 'cpu'; torch.set_num_threads(1)
     H = A.horizon
 
-    X = load_windows(A.csv, H, A.stride, A.limit)             # (N, H, 19)
+    X = load_windows(A.csv, H, A.stride, A.limit)             # (N, H, 19) PHYSICAL units
     print(f"[data] {len(X)} windows of ({H}, {FD}) (device {dev})")
-    mean = X.reshape(-1, FD).mean(0); std = X.reshape(-1, FD).std(0) + 1e-6   # per-channel
-    Xt = torch.tensor((X - mean) / std, dtype=torch.float32)
+    #### asinh(pos_err/scale): linear near 0 (keeps the ~6mm precise-tracking bulk resolvable) but
+    #### log-compresses the heavy tail (max ~5.7m) so per-channel std isn't set by rare deviations.
+    PE_COLS = [0, 1, 2]; c = A.pe_asinh
+    Xtr = X.copy()
+    if c > 0:
+        Xtr[..., PE_COLS] = np.arcsinh(Xtr[..., PE_COLS] / c)
+        print(f"[norm] pos_err asinh(x/{c}) transform ON")
+    mean = Xtr.reshape(-1, FD).mean(0); std = Xtr.reshape(-1, FD).std(0) + 1e-6   # per-channel
+    Xt = torch.tensor((Xtr - mean) / std, dtype=torch.float32)
+    mean_t = torch.tensor(mean, device=dev); std_t = torch.tensor(std, device=dev)  # for physical-space losses
+    dt = 1.0 / A.control_freq                                  # step time for the consistency loss
+    PE = slice(0, 3); VEL = slice(7, 10)                       # pos_err and velocity channels within a step
 
-    model = TemporalDenoiser(FD, H, ch=A.ch, depth=A.depth).to(dev)
+    def to_phys(arr):                                          # normalized(+transformed) -> physical units
+        a = arr * std + mean
+        if c > 0:
+            a[..., PE_COLS] = c * np.sinh(a[..., PE_COLS])     # invert asinh
+        return a
+    #### physical action cap = the real data's max target-speed magnitude (the slew/max_speed clip, ~1.4)
+    act_cap = float(np.linalg.norm(X.reshape(-1, FD)[:, SD:SD + AD], axis=1).max()) if A.act_cap <= 0 else A.act_cap
+    print(f"[clamp] action magnitude capped at real max = {act_cap:.3f} m/s")
+
+    model = TemporalDenoiser(FD, H, ch=A.ch, depth=A.depth, dilated=A.dilated).to(dev)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"[model] ch={A.ch} depth={A.depth} params={n_params/1e6:.2f}M batch={A.batch} ema={A.ema}")
+    print(f"[model] ch={A.ch} depth={A.depth} dilated={A.dilated} params={n_params/1e6:.2f}M batch={A.batch} ema={A.ema}")
     opt = torch.optim.Adam(model.parameters(), A.lr)
     #### warmup (linear 0->lr) then cosine decay lr->lr_min over the remaining steps
     def lr_at(step):
@@ -127,19 +162,42 @@ def main():
         noise = torch.randn_like(x0)
         ab = abar[t][:, None, None]
         xt = ab.sqrt() * x0 + (1 - ab).sqrt() * noise
-        loss = ((model(xt, t) - noise) ** 2).mean()
+        eps_pred = model(xt, t)
+        loss_diff = ((eps_pred - noise) ** 2).mean()
+        #### physical pos_err<->vel consistency on the PREDICTED x0 (denormalized).
+        #### pos_err = target - pos  =>  d(pos_err)/dt = v_target - vel  =>  v_target = d(pos_err)/dt + vel.
+        #### the path (target) is smooth, so penalize v_target's step-to-step change (target accel).
+        #### jitter in pos_err makes d(pos_err)/dt explode -> this term forces pos_err & vel to agree.
+        loss_cons = torch.tensor(0.0, device=dev)
+        if A.lambda_cons > 0:
+            x0_pred = (xt - (1 - ab).sqrt() * eps_pred) / ab.sqrt()   # DDPM x0 estimate (normalized)
+            x0_pred = x0_pred.clamp(-3.0, 3.0)                        # bound before denorm/sinh (avoids inf at high t)
+            phys = x0_pred * std_t + mean_t                           # de-normalize (pe still asinh-space)
+            pe, vel = phys[..., PE], phys[..., VEL]                   # (B,H,3) each
+            if c > 0:
+                pe = c * torch.sinh(pe)                               # invert asinh -> physical meters
+            #### everything in per-step METERS: target displacement d_tgt = Δpos_err + vel·dt
+            d_tgt = (pe[:, 1:] - pe[:, :-1]) + vel[:, :-1] * dt       # (B,H-1,3)
+            acc_tgt = d_tgt[:, 1:] - d_tgt[:, :-1]                    # target accel (2nd diff) (B,H-2,3)
+            cons_per = (acc_tgt ** 2).mean(dim=(1, 2))               # (B,)
+            loss_cons = (abar[t] * cons_per).mean()                  # weight by x0 confidence (low noise)
+        loss = loss_diff + A.lambda_cons * loss_cons
         opt.zero_grad(); loss.backward(); opt.step()
         with torch.no_grad():                                  # update EMA shadow
             for k, v in model.state_dict().items():
                 ema[k].mul_(A.ema).add_(v.detach(), alpha=1 - A.ema)
         if step % 2000 == 0:
-            print(f"[train] step {step:>6} lr {lr:.2e} loss {loss.item():.4f}", flush=True)
+            print(f"[train] step {step:>6} lr {lr:.2e} loss {loss.item():.4f} "
+                  f"(diff {loss_diff.item():.4f} cons {loss_cons.item():.4f})", flush=True)
 
     model.load_state_dict(ema)                                  # sample from EMA weights
     model.eval()
+    os.makedirs(f'{A.out}/shape_dataset', exist_ok=True)
+    torch.save({'ema': ema, 'mean': mean, 'std': std, 'act_cap': act_cap,
+                'args': vars(A), 'FD': FD, 'H': H}, f'{A.out}/model.pt')  # resample without retraining
 
     @torch.no_grad()
-    def sample(n):
+    def ddpm_sample(n):                                          # ancestral: injects noise each step
         x = torch.randn(n, H, FD, device=dev)
         for t in reversed(range(A.T)):
             tt = torch.full((n,), t, device=dev)
@@ -150,6 +208,36 @@ def main():
             x = x.clamp(-3.0, 3.0)   # keep the reverse process inside the normalized data range
         return x.cpu().numpy()
 
+    @torch.no_grad()
+    def ddim_sample(n, steps, eta=0.0):                          # DDIM: eta=0 -> deterministic, no noise
+        seq = np.linspace(0, A.T - 1, steps, dtype=int)[::-1]    # subsampled descending timesteps
+        one = torch.tensor(1.0, device=dev)
+        x = torch.randn(n, H, FD, device=dev)
+        for i, t in enumerate(seq):
+            tt = torch.full((n,), int(t), device=dev)
+            eps = model(x, tt); ab = abar[int(t)]
+            x0 = ((x - (1 - ab).sqrt() * eps) / ab.sqrt()).clamp(-3.0, 3.0)   # predicted clean x0
+            t_prev = int(seq[i + 1]) if i + 1 < len(seq) else -1
+            ab_prev = abar[t_prev] if t_prev >= 0 else one
+            sigma = eta * ((1 - ab_prev) / (1 - ab) * (1 - ab / ab_prev)).clamp(min=0).sqrt() if eta > 0 else 0.0
+            coef = (1 - ab_prev - (sigma ** 2 if eta > 0 else 0.0)).clamp(min=0).sqrt()   # dir toward x_t
+            x = ab_prev.sqrt() * x0 + coef * eps
+            if eta > 0 and t_prev >= 0:
+                x = x + sigma * torch.randn_like(x)
+        return x.cpu().numpy()
+
+    def sample(n):
+        return ddim_sample(n, A.ddim_steps, A.eta) if A.sampler == 'ddim' else ddpm_sample(n)
+
+    #### decisive check on IDENTICAL weights: does removing the sampler's noise (DDIM) cut roughness?
+    def pe_jerk(Gphys):                                          # (n,H,FD) -> mean pos_err 2nd-diff
+        pe = Gphys[:, :, 0:3]
+        return float(np.linalg.norm(pe[:, 2:] - 2 * pe[:, 1:-1] + pe[:, :-2], axis=2).mean())
+    cmp = 64
+    jp = pe_jerk(to_phys(ddpm_sample(cmp)))
+    jd = pe_jerk(to_phys(ddim_sample(cmp, A.ddim_steps, A.eta)))
+    print(f"[sampler] pe_jerk  DDPM={jp:.5f}  DDIM({A.ddim_steps},eta={A.eta})={jd:.5f}  (real≈0.00135)", flush=True)
+
     os.makedirs(f'{A.out}/shape_dataset', exist_ok=True)
     #### Same column layout as a real per-episode CSV (NO episode_id — merge adds it).
     HDR = ['step'] + STATE + ACT + ['reward', 'done']
@@ -157,12 +245,15 @@ def main():
     allG = []                                                  # keep generated (unnormalized) for stats
     while made < A.n_gen:
         k = min(200, A.n_gen - made)
-        G = sample(k) * std + mean                             # (k, H, 19)
+        G = to_phys(sample(k))                                 # (k, H, 19) physical (asinh inverted)
         for w in range(k):
             traj = G[w]                                        # (H, 19)
             #### renormalize the quaternion each step so attitudes are valid unit quats
             q = traj[:, QUAT]; traj[:, QUAT] = q / (np.linalg.norm(q, axis=1, keepdims=True) + 1e-8)
             s = traj[:, :SD]; act = traj[:, SD:SD + AD]
+            #### clamp action magnitude to the real physical max (preserve direction, scale down only)
+            an = np.linalg.norm(act, axis=1, keepdims=True)
+            act = act * np.minimum(1.0, act_cap / (an + 1e-8))
             reward = -np.linalg.norm(s[:, 0:3], axis=1)        # reward = -|pos_err|, recomputed
             fn = f'{A.out}/shape_dataset/gentraj-{made + w:05d}.csv'
             with open(fn, 'w', newline='') as f:
@@ -176,6 +267,8 @@ def main():
 
     #### ---- quality report: generated vs real, on the same channels ----
     G = np.concatenate(allG, 0).reshape(-1, FD)                # (n_gen*H, 19)
+    gn = np.linalg.norm(G[:, SD:SD + AD], axis=1, keepdims=True)   # apply the same action cap as written
+    G[:, SD:SD + AD] *= np.minimum(1.0, act_cap / (gn + 1e-8))
     R = X.reshape(-1, FD)                                      # real windows, same feature layout
     def blk(a, sl): return np.linalg.norm(a[:, sl], axis=1)
     def line(tag, a):
