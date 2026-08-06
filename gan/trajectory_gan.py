@@ -3,9 +3,11 @@
 normalization, class-conditional (on/off-path) setup, checkpoint/--load resample, and per-episode
 CSV output, so `build_mix.py` / `merge_shape_dataset.py` / `eval_aug.py` consume its pool unchanged.
 
-Only the generator swaps: instead of a denoising diffusion reverse process, a conditional WGAN-GP
-learns to map latent noise (+ on/off-path class) directly to an H-step [state(16)|action(3)] window.
-The generator/discriminator reuse the same 1D temporal-conv backbone as the diffusion denoiser.
+Only the generator swaps: instead of a denoising diffusion reverse process, a conditional GAN maps
+latent noise (+ on/off-path class) directly to an H-step [state(16)|action(3)] window. The
+generator/discriminator reuse the same 1D temporal-conv backbone as the diffusion denoiser.
+Discriminator Lipschitz control is selectable via --d-reg: 'sn' = spectral norm + hinge loss
+(default; cheaper — no 2nd-order gradient, n_critic 1), 'gp' = WGAN gradient penalty (n_critic ~5).
 
     conda activate iql
     python trajectory_gan.py --csv ../gym_pybullet_drones/gym_pybullet_drones/examples/data_soft/merged1.5M_soft.csv \
@@ -18,6 +20,12 @@ import os, argparse, csv
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
+
+def _sn(module, on):
+    """Spectral-normalize a layer (Miyato) when `on`, else return it unchanged."""
+    return nn.utils.spectral_norm(module) if on else module
 
 STATE = ['tx-x', 'ty-y', 'tz-z', 'qx', 'qy', 'qz', 'qw', 'vx', 'vy', 'vz', 'wx', 'wy', 'wz', 'lx', 'ly', 'lz']
 ACT = ['ax', 'ay', 'az']
@@ -56,14 +64,15 @@ def load_windows(csv_file, H, stride, limit=None):
 
 
 class ResBlocks(nn.Module):
-    """Shared 1D temporal-conv residual stack (same backbone as the diffusion denoiser)."""
-    def __init__(self, ch, depth, dilated=False):
+    """Shared 1D temporal-conv residual stack (same backbone as the diffusion denoiser).
+    `sn=True` spectral-normalizes the convs — used on the discriminator side only."""
+    def __init__(self, ch, depth, dilated=False, sn=False):
         super().__init__()
         self.blocks = nn.ModuleList()
         for i in range(depth):
             d = (2 ** (i % 5)) if dilated else 1
             self.blocks.append(nn.Sequential(
-                nn.Conv1d(ch, ch, 5, padding=2 * d, dilation=d), nn.GroupNorm(8, ch), nn.SiLU()))
+                _sn(nn.Conv1d(ch, ch, 5, padding=2 * d, dilation=d), sn), nn.GroupNorm(8, ch), nn.SiLU()))
 
     def forward(self, h):
         for blk in self.blocks:
@@ -95,15 +104,16 @@ class Generator(nn.Module):
 class Discriminator(nn.Module):
     """(H, feat) window -> critic score. Conv stack + global average pool, then a linear head plus a
     projection term <embed(c), pooled_features> (Miyato projection discriminator) for conditioning.
-    GroupNorm (not BatchNorm) so the WGAN-GP gradient penalty stays well-defined."""
-    def __init__(self, feat, ch=128, depth=6, dilated=False, n_classes=0):
+    GroupNorm (not BatchNorm) so the WGAN-GP gradient penalty stays well-defined. `sn=True`
+    spectral-normalizes every layer (the alternative Lipschitz control, used with the hinge loss)."""
+    def __init__(self, feat, ch=128, depth=6, dilated=False, n_classes=0, sn=False):
         super().__init__()
         self.n_classes = n_classes
-        self.inp = nn.Conv1d(feat, ch, 5, padding=2)
-        self.res = ResBlocks(ch, depth, dilated)
-        self.head = nn.Linear(ch, 1)
+        self.inp = _sn(nn.Conv1d(feat, ch, 5, padding=2), sn)
+        self.res = ResBlocks(ch, depth, dilated, sn=sn)
+        self.head = _sn(nn.Linear(ch, 1), sn)
         if n_classes > 0:
-            self.cproj = nn.Embedding(n_classes, ch)
+            self.cproj = _sn(nn.Embedding(n_classes, ch), sn)
 
     def forward(self, x, c=None):
         h = self.inp(x.transpose(1, 2))                           # (B, ch, H)
@@ -134,8 +144,11 @@ def main():
     ap.add_argument('--lr-d', type=float, default=1e-4)
     ap.add_argument('--beta1', type=float, default=0.0, help='Adam beta1 (WGAN-GP default 0.0)')
     ap.add_argument('--beta2', type=float, default=0.9)
-    ap.add_argument('--n-critic', type=int, default=5, help='D updates per G update')
-    ap.add_argument('--gp-weight', type=float, default=10.0, help='WGAN gradient-penalty weight')
+    ap.add_argument('--d-reg', choices=['sn', 'gp'], default='sn',
+                    help="discriminator Lipschitz control: 'sn'=spectral norm + hinge loss (cheaper, "
+                         "no 2nd-order grad); 'gp'=WGAN gradient penalty")
+    ap.add_argument('--n-critic', type=int, default=1, help='D updates per G update (SN-hinge: 1; WGAN-GP: ~5)')
+    ap.add_argument('--gp-weight', type=float, default=10.0, help='WGAN gradient-penalty weight (only if --d-reg gp)')
     ap.add_argument('--ema', type=float, default=0.999, help='EMA on the generator weights for sampling')
     ap.add_argument('--lambda-cons', type=float, default=0.1,
                     help='weight of the pos_err<->vel physical-consistency loss on generated windows (0 disables)')
@@ -223,11 +236,13 @@ def main():
               f"-> on-path={n_on} off-path={n_off}; batch off-path frac = {bal}")
 
     n_cls = N_CLASSES if A.class_cond else 0
+    use_sn = (A.d_reg == 'sn')
     G = Generator(FD, H, A.latent_dim, ch=A.ch, depth=A.depth, dilated=A.dilated, n_classes=n_cls).to(dev)
-    D = Discriminator(FD, ch=A.ch, depth=A.depth, dilated=A.dilated, n_classes=n_cls).to(dev)
+    D = Discriminator(FD, ch=A.ch, depth=A.depth, dilated=A.dilated, n_classes=n_cls, sn=use_sn).to(dev)
     npar = lambda m: sum(p.numel() for p in m.parameters()) / 1e6
+    reg = 'spectral-norm+hinge' if use_sn else f'wgan-gp(gp={A.gp_weight})'
     print(f"[model] G={npar(G):.2f}M D={npar(D):.2f}M ch={A.ch} depth={A.depth} latent={A.latent_dim} "
-          f"class_cond={A.class_cond} batch={A.batch} n_critic={A.n_critic} gp={A.gp_weight}")
+          f"class_cond={A.class_cond} batch={A.batch} n_critic={A.n_critic} d_reg={reg}")
     optG = torch.optim.Adam(G.parameters(), A.lr_g, betas=(A.beta1, A.beta2))
     optD = torch.optim.Adam(D.parameters(), A.lr_d, betas=(A.beta1, A.beta2))
     ema = {k: v.detach().clone() for k, v in G.state_dict().items()}
@@ -261,7 +276,10 @@ def main():
             real, cb = draw(A.batch)
             z = torch.randn(A.batch, A.latent_dim, device=dev)
             fake = G(z, cb).detach()
-            lossD = D(fake, cb).mean() - D(real, cb).mean() + A.gp_weight * gp_of(real, fake, cb)
+            if use_sn:                                            # spectral-norm path: hinge loss, no GP
+                lossD = F.relu(1.0 - D(real, cb)).mean() + F.relu(1.0 + D(fake, cb)).mean()
+            else:                                                 # WGAN-GP path
+                lossD = D(fake, cb).mean() - D(real, cb).mean() + A.gp_weight * gp_of(real, fake, cb)
             optD.zero_grad(); lossD.backward(); optD.step()
         #### --- one generator update ---
         _, cb = draw(A.batch)
