@@ -20,9 +20,14 @@ DEFAULT_OUTPUT_FILE = 'merged.csv'
 
 
 def merge(input_folder, output_file):
-    files = sorted(glob.glob(os.path.join(input_folder, '*.csv')))
+    #### input_folder may be a single folder (str) or a list of folders; episode_id is re-assigned
+    #### uniquely across ALL of them in sorted-within-folder order (symlinks are followed).
+    folders = [input_folder] if isinstance(input_folder, str) else list(input_folder)
+    files = []
+    for fo in folders:
+        files.extend(sorted(glob.glob(os.path.join(fo, '*.csv'))))
     if not files:
-        raise FileNotFoundError(f"No CSV files found in {input_folder}")
+        raise FileNotFoundError(f"No CSV files found in {folders}")
 
     with open(files[0], newline='') as f:
         header = next(csv.reader(f))
@@ -44,7 +49,7 @@ def merge(input_folder, output_file):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Merge shape_dataset.py per-episode CSVs into one CSV')
-    parser.add_argument('--input_folder', required=True, type=str, help='Folder containing per-episode CSVs (e.g. dataset_1M/shape_dataset)', metavar='')
+    parser.add_argument('--input_folder', required=True, type=str, nargs='+', help='One or more folders of per-episode CSVs (e.g. mix/shape_dataset dagger/shape_dataset)', metavar='')
     parser.add_argument('--output_file',  default=DEFAULT_OUTPUT_FILE, type=str, help=f'Path of the merged CSV to write (default: "{DEFAULT_OUTPUT_FILE}")', metavar='')
     ARGS = parser.parse_args()
 

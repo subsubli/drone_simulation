@@ -76,7 +76,7 @@ class TemporalDenoiser(nn.Module):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--csv', required=True)
+    ap.add_argument('--csv', default=None, help='training CSV (required unless --load)')
     ap.add_argument('--horizon', type=int, default=64)
     ap.add_argument('--stride', type=int, default=32)
     ap.add_argument('--steps', type=int, default=30000)
@@ -103,7 +103,11 @@ def main():
     ap.add_argument('--sampler', choices=['ddpm', 'ddim'], default='ddpm')
     ap.add_argument('--ddim-steps', type=int, default=100, help='reverse steps for DDIM (subsampled from T)')
     ap.add_argument('--eta', type=float, default=0.0, help='DDIM stochasticity (0=deterministic)')
+    ap.add_argument('--load', default=None, help='load a saved model.pt and RESAMPLE only (skip training)')
+    ap.add_argument('--gen-batch', type=int, default=200, help='windows sampled per reverse-diffusion pass')
     A = ap.parse_args()
+    if not A.load and not A.csv:
+        ap.error('--csv is required unless --load is given')
     if torch.cuda.is_available():
         dev = 'cuda'
     elif torch.backends.mps.is_available():
@@ -111,6 +115,31 @@ def main():
     else:
         dev = 'cpu'; torch.set_num_threads(1)
     H = A.horizon
+
+    PE_COLS = [0, 1, 2]
+
+    def make_to_phys(mean, std, c):
+        def to_phys(arr):                                     # normalized(+transformed) -> physical units
+            a = arr * std + mean
+            if c > 0:
+                a[..., PE_COLS] = c * np.sinh(a[..., PE_COLS])  # invert asinh
+            return a
+        return to_phys
+
+    if A.load:
+        #### RESAMPLE-ONLY: rebuild the model from a saved checkpoint, skip data-load + training entirely.
+        ck = torch.load(A.load, map_location=dev, weights_only=False)
+        sa = ck['args']
+        mean, std, act_cap = ck['mean'], ck['std'], ck['act_cap']
+        c = sa.get('pe_asinh', 0.0); H = ck['H']; A.T = sa.get('T', A.T)
+        model = TemporalDenoiser(FD, H, ch=sa['ch'], depth=sa['depth'], dilated=sa.get('dilated', False)).to(dev)
+        model.load_state_dict(ck['ema']); model.eval()
+        betas = torch.linspace(1e-4, 0.02, A.T).to(dev); abar = torch.cumprod(1 - betas, 0)
+        to_phys = make_to_phys(mean, std, c); X = None
+        os.makedirs(f'{A.out}/shape_dataset', exist_ok=True)
+        print(f"[load] {A.load}: ch={sa['ch']} depth={sa['depth']} dilated={sa.get('dilated', False)} "
+              f"asinh={c} act_cap={act_cap:.3f} T={A.T} -> resample {A.n_gen} via {A.sampler}")
+        return _generate(A, dev, model, betas, abar, to_phys, act_cap, H, X)
 
     X = load_windows(A.csv, H, A.stride, A.limit)             # (N, H, 19) PHYSICAL units
     print(f"[data] {len(X)} windows of ({H}, {FD}) (device {dev})")
@@ -126,12 +155,6 @@ def main():
     mean_t = torch.tensor(mean, device=dev); std_t = torch.tensor(std, device=dev)  # for physical-space losses
     dt = 1.0 / A.control_freq                                  # step time for the consistency loss
     PE = slice(0, 3); VEL = slice(7, 10)                       # pos_err and velocity channels within a step
-
-    def to_phys(arr):                                          # normalized(+transformed) -> physical units
-        a = arr * std + mean
-        if c > 0:
-            a[..., PE_COLS] = c * np.sinh(a[..., PE_COLS])     # invert asinh
-        return a
     #### physical action cap = the real data's max target-speed magnitude (the slew/max_speed clip, ~1.4)
     act_cap = float(np.linalg.norm(X.reshape(-1, FD)[:, SD:SD + AD], axis=1).max()) if A.act_cap <= 0 else A.act_cap
     print(f"[clamp] action magnitude capped at real max = {act_cap:.3f} m/s")
@@ -195,7 +218,12 @@ def main():
     os.makedirs(f'{A.out}/shape_dataset', exist_ok=True)
     torch.save({'ema': ema, 'mean': mean, 'std': std, 'act_cap': act_cap,
                 'args': vars(A), 'FD': FD, 'H': H}, f'{A.out}/model.pt')  # resample without retraining
+    to_phys = make_to_phys(mean, std, c)
+    return _generate(A, dev, model, betas, abar, to_phys, act_cap, H, X)
 
+
+def _generate(A, dev, model, betas, abar, to_phys, act_cap, H, X):
+    """Sample trajectories and write one per-episode CSV each (shared by train and --load paths)."""
     @torch.no_grad()
     def ddpm_sample(n):                                          # ancestral: injects noise each step
         x = torch.randn(n, H, FD, device=dev)
@@ -229,22 +257,20 @@ def main():
     def sample(n):
         return ddim_sample(n, A.ddim_steps, A.eta) if A.sampler == 'ddim' else ddpm_sample(n)
 
-    #### decisive check on IDENTICAL weights: does removing the sampler's noise (DDIM) cut roughness?
     def pe_jerk(Gphys):                                          # (n,H,FD) -> mean pos_err 2nd-diff
         pe = Gphys[:, :, 0:3]
         return float(np.linalg.norm(pe[:, 2:] - 2 * pe[:, 1:-1] + pe[:, :-2], axis=2).mean())
     cmp = 64
-    jp = pe_jerk(to_phys(ddpm_sample(cmp)))
-    jd = pe_jerk(to_phys(ddim_sample(cmp, A.ddim_steps, A.eta)))
-    print(f"[sampler] pe_jerk  DDPM={jp:.5f}  DDIM({A.ddim_steps},eta={A.eta})={jd:.5f}  (real≈0.00135)", flush=True)
+    print(f"[sampler] pe_jerk  DDPM={pe_jerk(to_phys(ddpm_sample(cmp))):.5f}  "
+          f"DDIM({A.ddim_steps},eta={A.eta})={pe_jerk(to_phys(ddim_sample(cmp, A.ddim_steps, A.eta))):.5f}  "
+          f"(real≈0.00135)", flush=True)
 
-    os.makedirs(f'{A.out}/shape_dataset', exist_ok=True)
     #### Same column layout as a real per-episode CSV (NO episode_id — merge adds it).
     HDR = ['step'] + STATE + ACT + ['reward', 'done']
     made = 0
-    allG = []                                                  # keep generated (unnormalized) for stats
+    allG = []                                                  # keep generated (physical) for stats
     while made < A.n_gen:
-        k = min(200, A.n_gen - made)
+        k = min(A.gen_batch, A.n_gen - made)
         G = to_phys(sample(k))                                 # (k, H, 19) physical (asinh inverted)
         for w in range(k):
             traj = G[w]                                        # (H, 19)
@@ -260,24 +286,25 @@ def main():
                 wr = csv.writer(f); wr.writerow(HDR)
                 for i in range(H):
                     wr.writerow([i, *s[i], *act[i], reward[i], i == H - 1])
-        allG.append(G)
+        if len(allG) < 20:                                     # cap stats memory for very large gen runs
+            allG.append(G)
         made += k
         print(f"[gen] wrote {made}/{A.n_gen} trajectory CSVs", flush=True)
     print(f"[done] {made} trajectory episodes (H={H}) -> {A.out}/shape_dataset/ (one CSV each)")
 
-    #### ---- quality report: generated vs real, on the same channels ----
-    G = np.concatenate(allG, 0).reshape(-1, FD)                # (n_gen*H, 19)
+    #### ---- quality report: generated (vs real if available) ----
+    G = np.concatenate(allG, 0).reshape(-1, FD)
     gn = np.linalg.norm(G[:, SD:SD + AD], axis=1, keepdims=True)   # apply the same action cap as written
     G[:, SD:SD + AD] *= np.minimum(1.0, act_cap / (gn + 1e-8))
-    R = X.reshape(-1, FD)                                      # real windows, same feature layout
     def blk(a, sl): return np.linalg.norm(a[:, sl], axis=1)
     def line(tag, a):
         pe, ve, ac = blk(a, slice(0, 3)), blk(a, slice(7, 10)), blk(a, slice(16, 19))
-        qn = blk(a, QUAT)
         print(f"  {tag:4} pos_err|mean|={pe.mean():.3f} (med {np.median(pe):.4f} max {pe.max():.2f})  "
-              f"vel={ve.mean():.2f}  act|mean|={ac.mean():.2f} (max {ac.max():.2f})  quat_norm={qn.mean():.3f}")
+              f"vel={ve.mean():.2f}  act|mean|={ac.mean():.2f} (max {ac.max():.2f})  quat_norm={blk(a, QUAT).mean():.3f}")
     print("[quality] generated vs real (pos_err/vel/action magnitudes, quat norm):")
-    line('GEN', G); line('REAL', R)
+    line('GEN', G)
+    if X is not None:
+        line('REAL', X.reshape(-1, FD))
 
 
 if __name__ == '__main__':
