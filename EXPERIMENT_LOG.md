@@ -376,8 +376,17 @@ The §15 policies all had DAgger×2. This evaluates each mix's INITIAL-only poli
 1. **Nothing completes without DAgger** — best is pure real soft at only **24/80 (30%)**; the diffusion-containing sets are 0–7/80. DAgger then lifts *every* dataset to ~400/400. This is the cleanest direct proof of the project's core claim: **DAgger, not the initial data (volume, realness, or mix), decides completion.**
 2. **Both blends collapse to 0/80 — strictly worse than either pure endpoint** (soft real 24/80, pure diffusion 7/80). The "mixing a real heavy-tail distribution with the diffusion's compressed-tail one is worse than either alone" effect — visible as the 50/50 instability *after* DAgger in §15 — is far starker *before* DAgger: both mixes are the worst, and pure diffusion actually out-tracks the real-containing blends (laps ~1.1–1.4 vs ~0.4). (init-only ⇒ all stuck/off-path, so the distances here just reflect being stranded, not precision.)
 
-**Stuck vs slow vs lost (why the low init-only laps — closest-idx trace + off-path distance, eval_stuck.py, 3 seeds × both dirs):** low net laps does NOT mean the same thing across datasets:
-- **soft real1.5M and diff1.5M(pure) init are SLOW, not stuck** — coverage 0.55–0.70, the closest-path-index is still advancing in the last quarter of the episode (0.24–0.37 laps), mean |pos_err| < 1m. They genuinely trace the path, just ~2× too slowly to close 3 laps in the fixed episode — "slow follower", would complete given more time.
-- **both real+diffusion BLENDS are LOST (diverged), not slow** — coverage 0.2–0.3, index frozen in the last quarter (~0.00 advance), mean |pos_err| **3–4m off the path**. Tracking has collapsed, not merely slowed.
+**Stuck vs slow vs lost — why the low init-only laps differ by dataset** (closest-idx trace + off-path distance, `eval_stuck.py`, 3 seeds × both dirs, averaged over the 4 shapes). "lastQ advance" = laps the closest-path-index still gains in the final quarter of the episode (≈0 ⇒ frozen); "dist" = mean |pos_err|:
+
+| init-only policy | net laps | coverage | lastQ advance | dist (m) | verdict |
+|---|---|---|---|---|---|
+| **soft real1.5M** | 1.61 | 0.66 | 0.30 | 0.53 | **SLOW** (tracing, would complete w/ more time) |
+| **diff1.5M (pure)** | 1.27 | 0.61 | 0.28 | 0.44 | **SLOW** (tracing, ~as good as pure real) |
+| real1.0M+diff0.5M | 0.37 | 0.26 | ~0.00 | 3.4 | **LOST** (diverged off-path, frozen) |
+| real0.5M+diff1.0M | 0.40 | 0.30 | ~0.01 | 3.0 | **LOST** (diverged off-path, frozen) |
+
+low net laps does NOT mean the same failure across datasets:
+- **soft real1.5M and diff1.5M(pure) init are SLOW, not stuck** — coverage ~0.6, index still advancing at episode end, |pos_err| < 1m. They genuinely trace the path, just ~2× too slowly to close 3 laps in the fixed episode.
+- **both real+diffusion BLENDS are LOST (diverged)** — coverage ~0.25, index frozen, |pos_err| **3–4m off the path**. Tracking has collapsed, not merely slowed. So the "mixing is worse than either pure source" effect isn't a slowdown — the blend breaks path-following outright, while pure diffusion init tracks about as well as pure real init.
 
 So the §15/§16 "mixing is worse than either pure source" is sharper than the traverse counts alone: a pure source (real or diffusion) yields a slow-but-valid tracker before DAgger, whereas a 50/50-ish real+diffusion blend yields a policy that diverges off the path entirely. Pure diffusion init tracks about as well as pure real init (both SLOW, dist <1m); it's the *combination* of the real heavy-tail and the diffusion compressed-tail distributions that breaks initial tracking.
