@@ -23,6 +23,13 @@ SD, AD = len(STATE), len(ACT)          # 16, 3
 FD = SD + AD                           # per-step features = 19 (state + action)
 QUAT = slice(3, 7)                     # quaternion within the state block of each step
 
+#### class-conditional generation: split the two physically-distinct sub-distributions the model
+#### otherwise blends into one. 0=on-path (pure precise-tracking window, max|pos_err|<=thr),
+#### 1=off-path (window that contains a corner/kick recovery excursion), 2=null (unconditional,
+#### for classifier-free guidance). Same 0.2m threshold as tables 7/13/14's off-path fraction.
+CLS_ON, CLS_OFF, CLS_NULL = 0, 1, 2
+N_CLASSES = 3
+
 
 def load_windows(csv_file, H, stride, limit=None):
     """Slice each episode into H-step windows of [state(16) | action(3)] = (H, 19)."""
@@ -52,9 +59,10 @@ class TemporalDenoiser(nn.Module):
 
     depth controls how many residual conv blocks stack in the middle; ch is width. For the
     quality run we go wider (ch=128) and deeper (depth=6) than the fast CPU baseline (64/3)."""
-    def __init__(self, feat, H, ch=128, depth=6, dilated=False):
+    def __init__(self, feat, H, ch=128, depth=6, dilated=False, n_classes=0):
         super().__init__()
         self.H = H
+        self.n_classes = n_classes
         self.inp = nn.Conv1d(feat, ch, 5, padding=2)
         #### dilated=True grows dilation 1,2,4,8,16,... so the receptive field spans the whole window
         #### (kernel 5, depth 6 -> RF ~33 < H=64 when undilated; dilation lifts RF past 64).
@@ -65,10 +73,16 @@ class TemporalDenoiser(nn.Module):
                 nn.Conv1d(ch, ch, 5, padding=2 * d, dilation=d), nn.GroupNorm(8, ch), nn.SiLU()))
         self.out = nn.Conv1d(ch, feat, 5, padding=2)
         self.temb = nn.Linear(1, ch)
+        #### class embedding added the SAME broadcast-add way as the timestep embedding (n_classes=0
+        #### => unconditional, byte-for-byte the old behavior so pre-class checkpoints load unchanged).
+        if n_classes > 0:
+            self.cemb = nn.Embedding(n_classes, ch)
 
-    def forward(self, x, t):                                    # x: (B, H, feat)
+    def forward(self, x, t, c=None):                            # x: (B, H, feat); c: (B,) long or None
         h = self.inp(x.transpose(1, 2))                        # (B, ch, H)
         h = h + self.temb((t.float() / 1000)[:, None])[:, :, None]
+        if self.n_classes > 0 and c is not None:
+            h = h + self.cemb(c)[:, :, None]
         for blk in self.blocks:                                # residual conv stack
             h = h + blk(h)
         return self.out(h).transpose(1, 2)                    # (B, H, feat)
@@ -105,6 +119,19 @@ def main():
     ap.add_argument('--eta', type=float, default=0.0, help='DDIM stochasticity (0=deterministic)')
     ap.add_argument('--load', default=None, help='load a saved model.pt and RESAMPLE only (skip training)')
     ap.add_argument('--gen-batch', type=int, default=200, help='windows sampled per reverse-diffusion pass')
+    #### class-conditional generation (on-path vs off-path recovery) ####
+    ap.add_argument('--class-cond', action='store_true',
+                    help='condition on on-path/off-path so the two sub-distributions are learned separately')
+    ap.add_argument('--pe-offpath-thr', type=float, default=0.2,
+                    help='|pos_err| (m) above which a window is labeled off-path/recovery (matches tables 7/13/14)')
+    ap.add_argument('--cond-dropout', type=float, default=0.1,
+                    help='prob a training window is relabeled null (unconditional) for classifier-free guidance')
+    ap.add_argument('--offpath-batch-frac', type=float, default=-1.0,
+                    help='oversample so this fraction of each batch is off-path (e.g. 0.5); <0 = natural data ratio')
+    ap.add_argument('--cfg-weight', type=float, default=1.0,
+                    help='classifier-free guidance weight at sampling (1=plain conditional, >1 sharpens the mode)')
+    ap.add_argument('--gen-offpath-frac', type=float, default=-1.0,
+                    help='fraction of generated windows drawn from the off-path mode; <0 = match the data')
     A = ap.parse_args()
     if not A.load and not A.csv:
         ap.error('--csv is required unless --load is given')
@@ -132,14 +159,18 @@ def main():
         sa = ck['args']
         mean, std, act_cap = ck['mean'], ck['std'], ck['act_cap']
         c = sa.get('pe_asinh', 0.0); H = ck['H']; A.T = sa.get('T', A.T)
-        model = TemporalDenoiser(FD, H, ch=sa['ch'], depth=sa['depth'], dilated=sa.get('dilated', False)).to(dev)
+        class_cond = sa.get('class_cond', False)                 # checkpoint remembers if it was conditioned
+        n_cls = N_CLASSES if class_cond else 0
+        data_frac = ck.get('offpath_frac', 0.1)                  # off-path window fraction the model saw
+        model = TemporalDenoiser(FD, H, ch=sa['ch'], depth=sa['depth'],
+                                 dilated=sa.get('dilated', False), n_classes=n_cls).to(dev)
         model.load_state_dict(ck['ema']); model.eval()
         betas = torch.linspace(1e-4, 0.02, A.T).to(dev); abar = torch.cumprod(1 - betas, 0)
         to_phys = make_to_phys(mean, std, c); X = None
         os.makedirs(f'{A.out}/shape_dataset', exist_ok=True)
         print(f"[load] {A.load}: ch={sa['ch']} depth={sa['depth']} dilated={sa.get('dilated', False)} "
-              f"asinh={c} act_cap={act_cap:.3f} T={A.T} -> resample {A.n_gen} via {A.sampler}")
-        return _generate(A, dev, model, betas, abar, to_phys, act_cap, H, X)
+              f"asinh={c} act_cap={act_cap:.3f} T={A.T} class_cond={class_cond} -> resample {A.n_gen} via {A.sampler}")
+        return _generate(A, dev, model, betas, abar, to_phys, act_cap, H, X, class_cond, data_frac)
 
     X = load_windows(A.csv, H, A.stride, A.limit)             # (N, H, 19) PHYSICAL units
     print(f"[data] {len(X)} windows of ({H}, {FD}) (device {dev})")
@@ -153,15 +184,36 @@ def main():
     mean = Xtr.reshape(-1, FD).mean(0); std = Xtr.reshape(-1, FD).std(0) + 1e-6   # per-channel
     Xt = torch.tensor((Xtr - mean) / std, dtype=torch.float32)
     mean_t = torch.tensor(mean, device=dev); std_t = torch.tensor(std, device=dev)  # for physical-space losses
+    #### per-window on/off-path label from the PHYSICAL pos_err (threshold matches tables 7/13/14).
+    #### a window is off-path/recovery if ANY step in it exceeds the threshold; else pure precise-tracking.
+    pe_win_max = np.linalg.norm(X[..., 0:3], axis=2).max(axis=1)           # (N,) max |pos_err| per window
+    labels = np.where(pe_win_max > A.pe_offpath_thr, CLS_OFF, CLS_ON).astype(np.int64)
+    data_frac = float((labels == CLS_OFF).mean())
+    labels_t = torch.tensor(labels)                                        # CPU, indexed by the same idx as Xt
+    #### optional class-balanced sampling: reweight windows so each batch is ~offpath_batch_frac off-path.
+    #### natural ratio is ~7%, which starves the off-path conditional branch; <0 keeps the natural ratio.
+    samp_w = None
+    n_on, n_off = int((labels == CLS_ON).sum()), int((labels == CLS_OFF).sum())
+    if A.class_cond and A.offpath_batch_frac >= 0 and 0 < n_off < len(labels):
+        f = A.offpath_batch_frac
+        w = np.where(labels == CLS_OFF, f / n_off, (1 - f) / max(1, n_on)).astype(np.float64)
+        samp_w = torch.tensor(w / w.sum())                                 # multinomial draw weights (CPU)
+    if A.class_cond:
+        row_off = float((np.linalg.norm(X[..., 0:3], axis=2) > A.pe_offpath_thr).mean())
+        bal = f"{A.offpath_batch_frac:.2f} (oversampled)" if samp_w is not None else "natural (no oversample)"
+        print(f"[class] threshold |pos_err|>{A.pe_offpath_thr}m: {data_frac*100:.1f}% of WINDOWS off-path "
+              f"({row_off*100:.1f}% of rows) -> on-path={n_on} off-path={n_off}; batch off-path frac = {bal}")
     dt = 1.0 / A.control_freq                                  # step time for the consistency loss
     PE = slice(0, 3); VEL = slice(7, 10)                       # pos_err and velocity channels within a step
     #### physical action cap = the real data's max target-speed magnitude (the slew/max_speed clip, ~1.4)
     act_cap = float(np.linalg.norm(X.reshape(-1, FD)[:, SD:SD + AD], axis=1).max()) if A.act_cap <= 0 else A.act_cap
     print(f"[clamp] action magnitude capped at real max = {act_cap:.3f} m/s")
 
-    model = TemporalDenoiser(FD, H, ch=A.ch, depth=A.depth, dilated=A.dilated).to(dev)
+    n_cls = N_CLASSES if A.class_cond else 0
+    model = TemporalDenoiser(FD, H, ch=A.ch, depth=A.depth, dilated=A.dilated, n_classes=n_cls).to(dev)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"[model] ch={A.ch} depth={A.depth} dilated={A.dilated} params={n_params/1e6:.2f}M batch={A.batch} ema={A.ema}")
+    print(f"[model] ch={A.ch} depth={A.depth} dilated={A.dilated} class_cond={A.class_cond} "
+          f"params={n_params/1e6:.2f}M batch={A.batch} ema={A.ema}")
     opt = torch.optim.Adam(model.parameters(), A.lr)
     #### warmup (linear 0->lr) then cosine decay lr->lr_min over the remaining steps
     def lr_at(step):
@@ -180,12 +232,19 @@ def main():
         lr = lr_at(step)
         for g in opt.param_groups:
             g['lr'] = lr
-        idx = torch.randint(0, len(Xt), (A.batch,))
+        idx = (torch.multinomial(samp_w, A.batch, replacement=True) if samp_w is not None
+               else torch.randint(0, len(Xt), (A.batch,)))
         x0 = Xt[idx].to(dev); t = torch.randint(0, A.T, (A.batch,), device=dev)
         noise = torch.randn_like(x0)
         ab = abar[t][:, None, None]
         xt = ab.sqrt() * x0 + (1 - ab).sqrt() * noise
-        eps_pred = model(xt, t)
+        clab = None
+        if A.class_cond:
+            clab = labels_t[idx].to(dev)
+            if A.cond_dropout > 0:                              # classifier-free guidance: drop to null
+                clab = clab.clone()
+                clab[torch.rand(A.batch, device=dev) < A.cond_dropout] = CLS_NULL
+        eps_pred = model(xt, t, clab)
         loss_diff = ((eps_pred - noise) ** 2).mean()
         #### physical pos_err<->vel consistency on the PREDICTED x0 (denormalized).
         #### pos_err = target - pos  =>  d(pos_err)/dt = v_target - vel  =>  v_target = d(pos_err)/dt + vel.
@@ -217,19 +276,31 @@ def main():
     model.eval()
     os.makedirs(f'{A.out}/shape_dataset', exist_ok=True)
     torch.save({'ema': ema, 'mean': mean, 'std': std, 'act_cap': act_cap,
-                'args': vars(A), 'FD': FD, 'H': H}, f'{A.out}/model.pt')  # resample without retraining
+                'args': vars(A), 'FD': FD, 'H': H,
+                'offpath_frac': data_frac}, f'{A.out}/model.pt')  # resample without retraining
     to_phys = make_to_phys(mean, std, c)
-    return _generate(A, dev, model, betas, abar, to_phys, act_cap, H, X)
+    return _generate(A, dev, model, betas, abar, to_phys, act_cap, H, X, A.class_cond, data_frac)
 
 
-def _generate(A, dev, model, betas, abar, to_phys, act_cap, H, X):
+def _generate(A, dev, model, betas, abar, to_phys, act_cap, H, X, class_cond=False, data_frac=0.1):
     """Sample trajectories and write one per-episode CSV each (shared by train and --load paths)."""
     @torch.no_grad()
-    def ddpm_sample(n):                                          # ancestral: injects noise each step
+    def eps_of(x, tt, cls):                                      # class-conditional eps with CFG
+        if not class_cond or cls is None:
+            return model(x, tt)
+        c = torch.full((x.shape[0],), cls, device=dev, dtype=torch.long)
+        if A.cfg_weight == 1.0:                                  # plain conditional, no guidance
+            return model(x, tt, c)
+        null = torch.full_like(c, CLS_NULL)                     # classifier-free guidance blend
+        e_c, e_u = model(x, tt, c), model(x, tt, null)
+        return e_u + A.cfg_weight * (e_c - e_u)
+
+    @torch.no_grad()
+    def ddpm_sample(n, cls=None):                               # ancestral: injects noise each step
         x = torch.randn(n, H, FD, device=dev)
         for t in reversed(range(A.T)):
             tt = torch.full((n,), t, device=dev)
-            pred = model(x, tt); a = 1 - betas[t]; ab = abar[t]
+            pred = eps_of(x, tt, cls); a = 1 - betas[t]; ab = abar[t]
             x = (x - (betas[t] / (1 - ab).sqrt()) * pred) / a.sqrt()
             if t > 0:
                 x = x + betas[t].sqrt() * torch.randn_like(x)
@@ -237,13 +308,13 @@ def _generate(A, dev, model, betas, abar, to_phys, act_cap, H, X):
         return x.cpu().numpy()
 
     @torch.no_grad()
-    def ddim_sample(n, steps, eta=0.0):                          # DDIM: eta=0 -> deterministic, no noise
+    def ddim_sample(n, steps, eta=0.0, cls=None):               # DDIM: eta=0 -> deterministic, no noise
         seq = np.linspace(0, A.T - 1, steps, dtype=int)[::-1]    # subsampled descending timesteps
         one = torch.tensor(1.0, device=dev)
         x = torch.randn(n, H, FD, device=dev)
         for i, t in enumerate(seq):
             tt = torch.full((n,), int(t), device=dev)
-            eps = model(x, tt); ab = abar[int(t)]
+            eps = eps_of(x, tt, cls); ab = abar[int(t)]
             x0 = ((x - (1 - ab).sqrt() * eps) / ab.sqrt()).clamp(-3.0, 3.0)   # predicted clean x0
             t_prev = int(seq[i + 1]) if i + 1 < len(seq) else -1
             ab_prev = abar[t_prev] if t_prev >= 0 else one
@@ -254,42 +325,57 @@ def _generate(A, dev, model, betas, abar, to_phys, act_cap, H, X):
                 x = x + sigma * torch.randn_like(x)
         return x.cpu().numpy()
 
-    def sample(n):
-        return ddim_sample(n, A.ddim_steps, A.eta) if A.sampler == 'ddim' else ddpm_sample(n)
+    def sample(n, cls=None):
+        return ddim_sample(n, A.ddim_steps, A.eta, cls) if A.sampler == 'ddim' else ddpm_sample(n, cls)
 
     def pe_jerk(Gphys):                                          # (n,H,FD) -> mean pos_err 2nd-diff
         pe = Gphys[:, :, 0:3]
         return float(np.linalg.norm(pe[:, 2:] - 2 * pe[:, 1:-1] + pe[:, :-2], axis=2).mean())
     cmp = 64
-    print(f"[sampler] pe_jerk  DDPM={pe_jerk(to_phys(ddpm_sample(cmp))):.5f}  "
-          f"DDIM({A.ddim_steps},eta={A.eta})={pe_jerk(to_phys(ddim_sample(cmp, A.ddim_steps, A.eta))):.5f}  "
+    jcls = CLS_ON if class_cond else None                       # roughness is the on-path (precise) mode's concern
+    print(f"[sampler] pe_jerk  DDPM={pe_jerk(to_phys(ddpm_sample(cmp, jcls))):.5f}  "
+          f"DDIM({A.ddim_steps},eta={A.eta})={pe_jerk(to_phys(ddim_sample(cmp, A.ddim_steps, A.eta, jcls))):.5f}  "
           f"(real≈0.00135)", flush=True)
+
+    #### Build the per-window class plan. Unconditional => all None (old behavior). Conditional =>
+    #### split n_gen into on-path/off-path by --gen-offpath-frac (default: match the training data).
+    if class_cond:
+        frac = data_frac if A.gen_offpath_frac < 0 else A.gen_offpath_frac
+        n_off = int(round(A.n_gen * frac)); n_on = A.n_gen - n_off
+        plan = [(CLS_ON, n_on), (CLS_OFF, n_off)]
+        print(f"[gen] class-conditional: {n_on} on-path + {n_off} off-path "
+              f"(frac {frac:.3f}, cfg_weight {A.cfg_weight})", flush=True)
+    else:
+        plan = [(None, A.n_gen)]
 
     #### Same column layout as a real per-episode CSV (NO episode_id — merge adds it).
     HDR = ['step'] + STATE + ACT + ['reward', 'done']
     made = 0
     allG = []                                                  # keep generated (physical) for stats
-    while made < A.n_gen:
-        k = min(A.gen_batch, A.n_gen - made)
-        G = to_phys(sample(k))                                 # (k, H, 19) physical (asinh inverted)
-        for w in range(k):
-            traj = G[w]                                        # (H, 19)
-            #### renormalize the quaternion each step so attitudes are valid unit quats
-            q = traj[:, QUAT]; traj[:, QUAT] = q / (np.linalg.norm(q, axis=1, keepdims=True) + 1e-8)
-            s = traj[:, :SD]; act = traj[:, SD:SD + AD]
-            #### clamp action magnitude to the real physical max (preserve direction, scale down only)
-            an = np.linalg.norm(act, axis=1, keepdims=True)
-            act = act * np.minimum(1.0, act_cap / (an + 1e-8))
-            reward = -np.linalg.norm(s[:, 0:3], axis=1)        # reward = -|pos_err|, recomputed
-            fn = f'{A.out}/shape_dataset/gentraj-{made + w:05d}.csv'
-            with open(fn, 'w', newline='') as f:
-                wr = csv.writer(f); wr.writerow(HDR)
-                for i in range(H):
-                    wr.writerow([i, *s[i], *act[i], reward[i], i == H - 1])
-        if len(allG) < 20:                                     # cap stats memory for very large gen runs
-            allG.append(G)
-        made += k
-        print(f"[gen] wrote {made}/{A.n_gen} trajectory CSVs", flush=True)
+    for cls, count in plan:
+        got = 0
+        while got < count:
+            k = min(A.gen_batch, count - got)
+            G = to_phys(sample(k, cls))                        # (k, H, 19) physical (asinh inverted)
+            for w in range(k):
+                traj = G[w]                                    # (H, 19)
+                #### renormalize the quaternion each step so attitudes are valid unit quats
+                q = traj[:, QUAT]; traj[:, QUAT] = q / (np.linalg.norm(q, axis=1, keepdims=True) + 1e-8)
+                s = traj[:, :SD]; act = traj[:, SD:SD + AD]
+                #### clamp action magnitude to the real physical max (preserve direction, scale down only)
+                an = np.linalg.norm(act, axis=1, keepdims=True)
+                act = act * np.minimum(1.0, act_cap / (an + 1e-8))
+                reward = -np.linalg.norm(s[:, 0:3], axis=1)    # reward = -|pos_err|, recomputed
+                fn = f'{A.out}/shape_dataset/gentraj-{made:05d}.csv'
+                with open(fn, 'w', newline='') as f:
+                    wr = csv.writer(f); wr.writerow(HDR)
+                    for i in range(H):
+                        wr.writerow([i, *s[i], *act[i], reward[i], i == H - 1])
+                made += 1
+            if len(allG) < 20:                                 # cap stats memory for very large gen runs
+                allG.append(G)
+            got += k
+            print(f"[gen] wrote {made}/{A.n_gen} trajectory CSVs", flush=True)
     print(f"[done] {made} trajectory episodes (H={H}) -> {A.out}/shape_dataset/ (one CSV each)")
 
     #### ---- quality report: generated (vs real if available) ----
