@@ -358,3 +358,20 @@ Numbers below are the **50-seed** sweep (seeds 500-549 × both dirs = **100 roll
 3. **Untrained-shape generalization survives augmentation** — the never-trained 5-pointed star still traverses on all policies (soft 98/100, mix1/mix3 99/100), and pure diffusion (mix3) even gives the tightest star distance (0.151±0.011). The 50/50 blend is again the weakest (93/100), consistent with its instability on the trained shapes. So the diffusion-augmented policies keep the shape-invariant generalization.
 
 **Headline:** diffusion augmentation **keeps completion AND untrained-shape generalization (DAgger-carried, even at 100% diffusion) but trades tracking precision ∝ how much real data it replaces; a 50/50 real+diffusion blend is less stable than either pure endpoint**. Diffusion stands in for real data to answer "does it complete the shape," not "how tightly does it track." Tooling: `build_mix.py` (episode-level real+diff mixing via symlinks), multi-folder `merge_shape_dataset.py`, `run_aug_pipeline.sh` (per-mix full recipe, run-dir captured from main.py's print → parallel-safe), `eval_aug.py` (Table-1-style laps+distance over a configurable seed sweep).
+
+## 16. Initial-only (DAgger ABLATION) — same 4 datasets, NO DAgger (2026-08-06 23:40)
+
+The §15 policies all had DAgger×2. This evaluates each mix's INITIAL-only policy (300k train on the mix, no DAgger) to separate "initial-data-mix effect" from "DAgger contribution". 10 seeds (500-509) × both dirs = 20 rollouts/shape (moderate, per the ablation's purpose).
+
+| shape (init-only) | soft real1.5M | real1.0M+diff0.5M | real0.5M+diff1.0M | diff1.5M (pure) |
+|---|---|---|---|---|
+| triangle laps (min, trav) | 1.73±0.55 (0.01, 8/20) | 0.35±0.26 (0.00, 0/20) | 0.45±0.35 (0.00, 0/20) | 1.04±0.59 (0.02, 0/20) |
+| square | 1.67±0.62 (0.29, 7/20) | 0.45±0.39 (0.00, 0/20) | 0.49±0.32 (0.00, 0/20) | 1.18±0.74 (0.14, 2/20) |
+| pentagon | 1.69±0.70 (0.49, 8/20) | 0.38±0.26 (0.00, 0/20) | 0.46±0.32 (0.00, 0/20) | 1.14±0.72 (0.00, 5/20) |
+| circle | 1.47±0.48 (0.39, 1/20) | 0.45±0.29 (0.02, 0/20) | 0.43±0.27 (0.04, 0/20) | 1.36±0.35 (0.40, 0/20) |
+| **TOTAL traverse (init-only)** | **24/80** | **0/80** | **0/80** | **7/80** |
+| same policy **+ DAgger×2** (from §15, per-100 scaled) | ~400/400 | 400/400 | 377/400 | 400/400 |
+
+**Two findings:**
+1. **Nothing completes without DAgger** — best is pure real soft at only **24/80 (30%)**; the diffusion-containing sets are 0–7/80. DAgger then lifts *every* dataset to ~400/400. This is the cleanest direct proof of the project's core claim: **DAgger, not the initial data (volume, realness, or mix), decides completion.**
+2. **Both blends collapse to 0/80 — strictly worse than either pure endpoint** (soft real 24/80, pure diffusion 7/80). The "mixing a real heavy-tail distribution with the diffusion's compressed-tail one is worse than either alone" effect — visible as the 50/50 instability *after* DAgger in §15 — is far starker *before* DAgger: both mixes are the worst, and pure diffusion actually out-tracks the real-containing blends (laps ~1.1–1.4 vs ~0.4). (init-only ⇒ all stuck/off-path, so the distances here just reflect being stranded, not precision.)
