@@ -438,3 +438,21 @@ cc results (§15's unconditioned counterpart in parentheses on the completion/pr
 3. **At high real fraction, cc ≈ unconditioned (a wash).** real1.0+cc0.5 = 399/400 with one stray pentagon blow-up (min 1.12, dist 2.12m) and circle 0.021 ≈ §15's 400/400 / 0.019 — within seed noise. Expected: diffusion is a minority there, so which generator produced it barely matters. (Both cc blends carry exactly one isolated pentagon blow-up; pentagon is the sharpest-corner trained shape and the residual weak spot.)
 
 **Headline:** the §17 class-conditional generator is a **better augmentation source than the §15 unconditioned one, and the margin scales with how much diffusion data the mix uses** — tied when real dominates, ~17% tighter precision + fixed instability (377→399/400, star 93→100/100) when diffusion dominates. This is the first result where a **generator-side change (not DAgger)** measurably improved downstream policies. Final policies kept: `mix_cc1.5`, `mix_r0.5_cc1.0`, `mix_r1.0_cc0.5` d2 run dirs; init policy `runs/merged/…_ehsq` kept for the pending initial-only (§16-style) cc ablation.
+
+## 19. Class-conditional INITIAL-ONLY (no DAgger) — the §18 win INVERTS before DAgger (2026-08-07 05:49)
+
+§18 showed cc is a better augmentation source *with* the full DAgger×2 recipe. §16 showed the initial-only (no-DAgger) story for the unconditioned mixes. This runs the same §16 ablation on the three cc mixes: init-only 300k IQL train (cc1.5 & real0.5+cc1.0 inits retrained from their kept `merged.csv`; real1.0+cc0.5 reused the pipeline's init `…_ehsq`), evaluated like §16 (`eval_aug.py` 10 seeds 500-509 × both dirs = 20/shape; `eval_stuck.py` 3 seeds for the stuck/slow/lost verdict).
+
+| init-only (no DAgger) | traverse | mean dist (m) | verdict | §16 unconditioned counterpart |
+|---|---|---|---|---|
+| **cc1.5 (pure)** | **0/80** | **~21 (16–25)** | **LOST (catastrophic)** | diff1.5-pure: **7/80, SLOW, <1m** |
+| real0.5M+cc1.0M | 0/80 | ~2.1 | LOST | real0.5+diff1.0: 0/80, LOST, ~2m |
+| real1.0M+cc0.5M | 0/80 | ~2.6 | LOST | real1.0+diff0.5: 0/80, LOST |
+| *(ref) soft real1.5M* | *24/80* | *<1m* | *SLOW-but-valid* | *(same policy)* |
+
+**The §18 result inverts: cc's clean separation is a LIABILITY without DAgger, worst at pure.**
+1. **Every cc mix is 0/80 LOST** — none traces before DAgger, same as §16's blends. But **pure cc is CATASTROPHICALLY lost (dist ~21m, max 35m)**, far worse than §16's unconditioned pure-diffusion, which was a *slow-but-valid* tracker (7/80, dist <1m). So on the pure-diffusion axis the class-conditional generator is *dramatically worse* init-only than the unconditioned one.
+2. **Mechanism — clean separation creates a recovery COVERAGE HOLE.** §17's win was that cc removes the 0.2–1m smeared tail from on-path windows and clusters off-path tightly at ~1m. But that same cleanliness means the training data has almost nothing in the 0.2–1m mid-range and **nothing beyond ~1m** (§17: off-path max 1.04m vs real 5.66m). A DAgger-less init that drifts into that hole has never seen how to return and diverges without bound. The real heavy-tail (3–5m recovery) is exactly what caps the divergence — which is why the real-containing blends stay LOST-at-~2m while **pure cc, with no real recovery data at all, blows out to ~21m**.
+3. **This proves the §18 gain is entirely DAgger-enabled.** DAgger drives the policy to its own off-path states and labels them with pure-pursuit's raw recovery answer — supplying exactly the mid/long-range recovery coverage cc's data lacks. Fill the hole (DAgger) and cc's cleaner precise-tracking bulk wins (§18); leave it unfilled (init-only) and cc's hole makes it the worst source.
+
+**Headline:** class-conditioning is a **DAgger-conditional** improvement — it makes the generator a better augmentation source *only because* DAgger backfills the recovery coverage the clean separation removes. Init-only it's strictly worse (pure cc catastrophically so), a sharp new instance of the project's core lesson (DAgger decides completion): here data *cleanliness* and pre-DAgger *robustness* are directly opposed. Kept init policies: `runs/merged/…_tvpq` (cc1.5), `…_vhxz` (real0.5+cc1.0), `…_ehsq` (real1.0+cc0.5).
