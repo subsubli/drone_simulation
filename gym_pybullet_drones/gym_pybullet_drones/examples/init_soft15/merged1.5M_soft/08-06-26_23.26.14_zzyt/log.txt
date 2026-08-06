@@ -1,0 +1,5 @@
+[23:26:14] Log dir: /Users/hanjakp/drone_simulation/gym_pybullet_drones/gym_pybullet_drones/examples/init_soft15/merged1.5M_soft/08-06-26_23.26.14_zzyt
+[23:26:25] off-path rows (|pos_err|>0.2): 102458 / 1502261 (6.82%)
+[23:31:58] {'step': 100000, 'v_loss': 0.0021665911190211773, 'q_loss': 0.020119570195674896, 'policy_loss': -6.627601146697998}
+[23:36:10] {'step': 200000, 'v_loss': 0.0030653502326458693, 'q_loss': 0.04083479568362236, 'policy_loss': -7.924256801605225}
+[23:40:23] {'step': 300000, 'v_loss': 0.005245632026344538, 'q_loss': 0.09777887165546417, 'policy_loss': -8.812596321105957}
