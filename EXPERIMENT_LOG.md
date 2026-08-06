@@ -417,20 +417,24 @@ Net: class-conditioning delivered exactly the **mode separation** it targeted (o
 
 ## 18. Class-conditional AUGMENTATION downstream — does §17's clean generator beat §15's unconditioned one? (2026-08-07 02:55)
 
-§17 showed class-conditioning cleanly separates the on/off-path modes at the DATA level (on-path p99 0.042m vs the unconditioned generator's 0.390m). Does that help the POLICY? Regenerated a 24,000-window (1.5M-row) cc pool from `gen_traj_cc/model.pt` at the natural 7% off-path ratio (full-pool check: median 0.017m, p99 1.015m, max 1.04m, off-path 6.97% — the clean-separation composition), then built two mixes and ran the **identical §15 recipe** (init 300k → DAgger-1 4-shape seeds 0-59 → retrain → DAgger-2 sq+tri seeds 60-119 → retrain) and the **same 50-seed eval** (500-549 × both dirs = 100 rollouts/shape). Two mixes chosen to hit §17's two predictions: pure-cc (precision axis, vs §15 diff1.5-pure) and real0.5+cc1.0 (stability axis, vs §15's unstable real0.5+diff1.0M / 377/400).
+§17 showed class-conditioning cleanly separates the on/off-path modes at the DATA level (on-path p99 0.042m vs the unconditioned generator's 0.390m). Does that help the POLICY? Regenerated a 24,000-window (1.5M-row) cc pool from `gen_traj_cc/model.pt` at the natural 7% off-path ratio (full-pool check: median 0.017m, p99 1.015m, max 1.04m, off-path 6.97% — the clean-separation composition), then built the **same three mix ratios as §15** and ran the **identical §15 recipe** (init 300k → DAgger-1 4-shape seeds 0-59 → retrain → DAgger-2 sq+tri seeds 60-119 → retrain) and the **same 50-seed eval** (500-549 × both dirs = 100 rollouts/shape, star = untrained generalization).
 
-| shape (laps min, trav) / dist | **cc1.5 (pure)** | §15 diff1.5 (pure) | **real0.5M+cc1.0M** | §15 real0.5M+diff1.0M |
-|---|---|---|---|---|
-| triangle | 2.65 (2.54, 100/100) | 2.60 (2.46, 100/100) | 2.66 (2.47, 100/100) | 2.39 (0.30, **87/100**) |
-| square | 2.87 (2.74, 100/100) | 2.80 (2.58, 100/100) | 2.88 (2.77, 100/100) | 2.74 (0.29, **95/100**) |
-| pentagon | 3.14 (2.95, 100/100) | 3.10 (2.85, 100/100) | 3.13 (0.37, **99/100**) | 3.02 (0.39, **95/100**) |
-| circle | 2.53 (2.47, 100/100) | 2.49 (2.43, 100/100) | 2.64 (2.50, 100/100) | 2.63 (2.55, 100/100) |
-| **TOTAL traverse** | **400/400** | 400/400 | **399/400** | **377/400** |
-| circle dist (m) | **0.040** | 0.048 | **0.032** | 0.036 |
-| tri / sq / pent dist | 0.110 / 0.128 / 0.123 | 0.114 / 0.132 / 0.125 | 0.114 / 0.137 / 0.141 | 0.311 / 0.234 / 0.207 |
+cc results (§15's unconditioned counterpart in parentheses on the completion/precision rows):
 
-**Class-conditioning improves BOTH downstream axes vs the unconditioned generator:**
-1. **Precision (pure-diffusion extreme)** — cc1.5-pure matches completion (400/400) and tracks *tighter*: circle 0.048→**0.040** (~17%), and every corner shape marginally lower (0.114/0.132/0.125 → 0.110/0.128/0.123). Modest but uniform — consistent with §17's finding that cc doesn't tighten the on-path *bulk* median (still ~16mm) but removes the smeared-tail contamination (p99 0.39→0.042) that the policy otherwise inherits and compounds in closed loop.
-2. **Stability (the blend §15 flagged)** — real0.5+cc1.0 is **399/400 vs §15's 377/400**: the clustered held-out blow-ups (§15 triangle 87 / square 95 / pentagon 95) collapse to a **single** isolated pentagon failure (min laps 0.37, dist 0.97m; the other 99 pentagons + all triangle/square/circle are clean). §15 blamed the instability on "real heavy-tail + diffusion compressed-tail = conflicting signal"; cc's clean mode separation makes the diffusion distribution internally consistent, nearly eliminating that conflict — though one residual blow-up means it's not perfectly cured.
+| shape (laps: min, trav) / dist | **real1.0M+cc0.5M** | **real0.5M+cc1.0M** | **cc1.5M (pure)** |
+|---|---|---|---|
+| triangle | 2.67 (2.63, 100/100) | 2.66 (2.47, 100/100) | 2.65 (2.54, 100/100) |
+| square | 2.90 (2.76, 100/100) | 2.88 (2.77, 100/100) | 2.87 (2.74, 100/100) |
+| pentagon | 3.18 (1.12, **99/100**) | 3.13 (0.37, **99/100**) | 3.14 (2.95, 100/100) |
+| circle | 2.69 (2.64, 100/100) | 2.64 (2.50, 100/100) | 2.53 (2.47, 100/100) |
+| **TOTAL traverse (4 trained)** | **399/400** (§15 400/400) | **399/400** (§15 **377/400**) | **400/400** (§15 400/400) |
+| circle dist (m) | 0.021 (§15 0.019) | **0.032** (§15 0.036) | **0.040** (§15 0.048) |
+| tri / sq / pent dist | 0.113 / 0.133 / 0.146 | 0.114 / 0.137 / 0.141 | 0.110 / 0.128 / 0.123 |
+| *star (UNTRAINED): trav / dist* | 100/100 / 0.154 (§15 99/100 / 0.164) | **100/100 / 0.155** (§15 **93/100 / 0.256**) | 100/100 / 0.153 (§15 99/100 / 0.151) |
 
-**Headline:** the §17 class-conditional generator is a strictly better augmentation source than the §15 unconditioned one — same completion, ~17% tighter precision at 100% diffusion, and it nearly fixes the 50/50-blend instability (377→399/400). This is the first result where a generator-side change (not DAgger) measurably improved a downstream policy. Not run: real1.0+cc0.5 (both §15 and cc expected 400/400-stable — less discriminating). Final policies kept: `mix_cc1.5` and `mix_r0.5_cc1.0` d2 run dirs.
+**Three findings — cc's advantage over the unconditioned generator GROWS with diffusion fraction:**
+1. **Precision advantage scales with diffusion reliance.** circle dist (pure-precision axis) — cc vs §15 by mix: 1.0:0.5 → 0.021 vs 0.019 (**tied**, real dominates), 0.5:1.0 → **0.032 vs 0.036**, 0:1.5 → **0.040 vs 0.048** (~17%). The more the policy leans on diffusion data, the more cc's cleaner on-path distribution (§17 p99 0.042 vs 0.39) helps; at high real fraction the real heavy-tail dominates and the two generators are indistinguishable. cc does NOT tighten the on-path *bulk* median (still ~16mm, §17), so the gain is from removing the smeared-tail contamination the policy otherwise compounds in closed loop, not from tighter bulk.
+2. **cc nearly cures the 50/50-blend instability §15 flagged.** real0.5+cc1.0 = **399/400 vs §15's 377/400**: §15's clustered blow-ups (triangle 87 / square 95 / pentagon 95) collapse to a **single** isolated pentagon failure. Same story on the untrained star: **100/100 / 0.155 vs §15's 93/100 / 0.256**. cc's clean mode separation makes the diffusion distribution internally consistent, removing the "real heavy-tail + diffusion compressed-tail = conflicting signal" §15 blamed — though one residual pent blow-up means not perfectly cured.
+3. **At high real fraction, cc ≈ unconditioned (a wash).** real1.0+cc0.5 = 399/400 with one stray pentagon blow-up (min 1.12, dist 2.12m) and circle 0.021 ≈ §15's 400/400 / 0.019 — within seed noise. Expected: diffusion is a minority there, so which generator produced it barely matters. (Both cc blends carry exactly one isolated pentagon blow-up; pentagon is the sharpest-corner trained shape and the residual weak spot.)
+
+**Headline:** the §17 class-conditional generator is a **better augmentation source than the §15 unconditioned one, and the margin scales with how much diffusion data the mix uses** — tied when real dominates, ~17% tighter precision + fixed instability (377→399/400, star 93→100/100) when diffusion dominates. This is the first result where a **generator-side change (not DAgger)** measurably improved downstream policies. Final policies kept: `mix_cc1.5`, `mix_r0.5_cc1.0`, `mix_r1.0_cc0.5` d2 run dirs; init policy `runs/merged/…_ehsq` kept for the pending initial-only (§16-style) cc ablation.
