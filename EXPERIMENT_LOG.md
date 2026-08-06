@@ -322,7 +322,7 @@ Residual (1) above (under-sharpened pos_err) is a step-to-step JITTER, measured 
 
 Before asking what a policy trained on it does (§15), this is what the generated DATA itself looks like: |pos_err| over the full pure-diffusion 1.5M pool vs the real soft 1.5M it was trained on.
 
-| |pos_err| | median | mean | p90 | p99 | max | off-path (>0.2m) |
+| ‖pos_err‖ (m) | median | mean | p90 | p99 | max | off-path (>0.2m) |
 |---|---|---|---|---|---|---|
 | **diffusion (pure 1.5M)** | **0.018m** | 0.029 | 0.037 | 0.390 | 1.01 | 1.34% |
 | real soft 1.5M | **0.006m** | 0.190 | 0.091 | 3.884 | 5.66 | 6.82% |
