@@ -144,9 +144,14 @@ def main():
     ap.add_argument('--lr-d', type=float, default=1e-4)
     ap.add_argument('--beta1', type=float, default=0.0, help='Adam beta1 (WGAN-GP default 0.0)')
     ap.add_argument('--beta2', type=float, default=0.9)
+    ap.add_argument('--loss', choices=['rp', 'hinge'], default='rp',
+                    help="adversarial objective: 'rp'=relativistic pairing (R3GAN — loss depends only on "
+                         "D(real)-D(fake), so neither side can run away); 'hinge'=absolute hinge")
+    ap.add_argument('--r1-gamma', type=float, default=0.0,
+                    help='R1 gradient penalty on real (StyleGAN-style); 0=off. Stabilizes rp without WGAN-GP cost')
     ap.add_argument('--d-reg', choices=['sn', 'gp'], default='sn',
-                    help="discriminator Lipschitz control: 'sn'=spectral norm + hinge loss (cheaper, "
-                         "no 2nd-order grad); 'gp'=WGAN gradient penalty")
+                    help="discriminator Lipschitz control: 'sn'=spectral norm (cheap, no 2nd-order grad); "
+                         "'gp'=WGAN gradient penalty")
     ap.add_argument('--n-critic', type=int, default=1, help='D updates per outer step (SN-hinge: 1; WGAN-GP: ~5)')
     ap.add_argument('--g-steps', type=int, default=1,
                     help='G updates per outer step; >1 gives the generator more updates than D when D over-powers G')
@@ -158,6 +163,8 @@ def main():
     ap.add_argument('--d-win-ema', type=float, default=0.99, help='EMA decay for the tracked D win-rate')
     ap.add_argument('--gp-weight', type=float, default=10.0, help='WGAN gradient-penalty weight (only if --d-reg gp)')
     ap.add_argument('--ema', type=float, default=0.999, help='EMA on the generator weights for sampling')
+    ap.add_argument('--eval-every', type=int, default=2000,
+                    help='every N steps, score the EMA generator and keep the best checkpoint (GANs are non-monotonic)')
     ap.add_argument('--lambda-cons', type=float, default=0.1,
                     help='weight of the pos_err<->vel physical-consistency loss on generated windows (0 disables)')
     ap.add_argument('--act-cap', type=float, default=0.0,
@@ -248,10 +255,10 @@ def main():
     G = Generator(FD, H, A.latent_dim, ch=A.ch, depth=A.depth, dilated=A.dilated, n_classes=n_cls).to(dev)
     D = Discriminator(FD, ch=A.ch, depth=A.depth, dilated=A.dilated, n_classes=n_cls, sn=use_sn).to(dev)
     npar = lambda m: sum(p.numel() for p in m.parameters()) / 1e6
-    reg = 'spectral-norm+hinge' if use_sn else f'wgan-gp(gp={A.gp_weight})'
+    reg = 'spectral-norm' if use_sn else f'wgan-gp(gp={A.gp_weight})'
     print(f"[model] G={npar(G):.2f}M D={npar(D):.2f}M ch={A.ch} depth={A.depth} latent={A.latent_dim} "
-          f"class_cond={A.class_cond} batch={A.batch} n_critic={A.n_critic} g_steps={A.g_steps} "
-          f"lr_g={A.lr_g:g} lr_d={A.lr_d:g} d_reg={reg}")
+          f"class_cond={A.class_cond} batch={A.batch} loss={A.loss} r1={A.r1_gamma} d_reg={reg} "
+          f"n_critic={A.n_critic} g_steps={A.g_steps} lr_g={A.lr_g:g} lr_d={A.lr_d:g}")
     optG = torch.optim.Adam(G.parameters(), A.lr_g, betas=(A.beta1, A.beta2))
     optD = torch.optim.Adam(D.parameters(), A.lr_d, betas=(A.beta1, A.beta2))
     ema = {k: v.detach().clone() for k, v in G.state_dict().items()}
@@ -279,8 +286,31 @@ def main():
         acc_tgt = d_tgt[:, 1:] - d_tgt[:, :-1]
         return (acc_tgt ** 2).mean()
 
+    to_phys = make_to_phys(mean, std, c)
+    os.makedirs(f'{A.out}/shape_dataset', exist_ok=True)
+
+    def save_ckpt(weights):
+        torch.save({'ema': weights, 'mean': mean, 'std': std, 'act_cap': act_cap,
+                    'args': vars(A), 'FD': FD, 'H': H, 'offpath_frac': data_frac}, f'{A.out}/model.pt')
+
+    @torch.no_grad()
+    def quick_eval():
+        """GANs don't converge monotonically — score the EMA generator so we keep the BEST checkpoint,
+        not the last. Score = on-path pos_err median (the quantity that degraded 0.015m->0.59m between
+        the 10k and 30k runs); lower = tighter precise-tracking bulk. A degenerate floor guards collapse."""
+        bak = {k: v.detach().clone() for k, v in G.state_dict().items()}
+        G.load_state_dict(ema); G.eval()
+        z = torch.randn(256, A.latent_dim, device=dev)
+        cb = torch.full((256,), CLS_ON, device=dev, dtype=torch.long) if A.class_cond else None
+        w = G(z, cb).clamp(-3.0, 3.0).cpu().numpy()
+        G.load_state_dict(bak); G.train()
+        pe = np.linalg.norm(to_phys(w)[:, :, 0:3], axis=2)
+        med = float(np.median(pe)); spread = float(pe.std())
+        return med, spread
+
     dwin = 0.5; n_dskip = 0                                       # tracked D win-rate + skip counter
     lossD = torch.tensor(0.0, device=dev)
+    best_score = float('inf'); best_ema = {k: v.detach().clone() for k, v in ema.items()}; best_step = 0
     for step in range(A.steps):
         #### --- n_critic discriminator updates (dynamically skipped if D already dominates) ---
         skip_d = A.dynamic_d and dwin > A.d_win_thr
@@ -294,37 +324,54 @@ def main():
         else:
             for _ in range(A.n_critic):
                 real, cb = draw(A.batch)
+                if A.r1_gamma > 0:
+                    real = real.requires_grad_(True)
                 z = torch.randn(A.batch, A.latent_dim, device=dev)
                 fake = G(z, cb).detach()
                 dr, df = D(real, cb), D(fake, cb)
                 win = 0.5 * ((dr > 0).float().mean() + (df < 0).float().mean())   # D classification accuracy
                 dwin = A.d_win_ema * dwin + (1 - A.d_win_ema) * win.item()
-                if use_sn:                                        # spectral-norm path: hinge loss, no GP
+                if A.loss == 'rp':                                # relativistic pairing (R3GAN): only D(real)-D(fake) matters
+                    lossD = F.softplus(df - dr).mean()
+                else:                                             # absolute hinge
                     lossD = F.relu(1.0 - dr).mean() + F.relu(1.0 + df).mean()
-                else:                                             # WGAN-GP path
-                    lossD = df.mean() - dr.mean() + A.gp_weight * gp_of(real, fake, cb)
+                if A.r1_gamma > 0:                                # R1: penalize |grad_real D|^2 (StyleGAN/R3GAN)
+                    r1 = torch.autograd.grad(dr.sum(), real, create_graph=True)[0]
+                    lossD = lossD + 0.5 * A.r1_gamma * r1.reshape(r1.shape[0], -1).pow(2).sum(1).mean()
+                if A.d_reg == 'gp':
+                    lossD = lossD + A.gp_weight * gp_of(real, fake, cb)
                 optD.zero_grad(); lossD.backward(); optD.step()
         #### --- g_steps generator updates (>1 rebalances when D over-powers G) ---
         for _ in range(A.g_steps):
-            _, cb = draw(A.batch)
+            real_g, cb = draw(A.batch)
             z = torch.randn(A.batch, A.latent_dim, device=dev)
             fake = G(z, cb)
-            lossG = -D(fake, cb).mean()
+            if A.loss == 'rp':                                    # relativistic: G wants D(fake) > D(real)
+                lossG = F.softplus(D(real_g, cb) - D(fake, cb)).mean()
+            else:
+                lossG = -D(fake, cb).mean()
             lc = cons_loss(fake) if A.lambda_cons > 0 else torch.tensor(0.0, device=dev)
             optG.zero_grad(); (lossG + A.lambda_cons * lc).backward(); optG.step()
         with torch.no_grad():
             for k, v in G.state_dict().items():
                 ema[k].mul_(A.ema).add_(v.detach(), alpha=1 - A.ema)
-        if step % 2000 == 0:
+        if step % A.eval_every == 0:
+            med, spread = quick_eval()
+            #### keep the best checkpoint (lowest on-path median), guarding against a collapsed-to-zero
+            #### generator (spread floor) so we don't select a degenerate mode.
+            improved = med < best_score and spread > 0.02
+            if improved:
+                best_score = med; best_step = step
+                best_ema = {k: v.detach().clone() for k, v in ema.items()}
+                save_ckpt(best_ema)
             dtag = f" d_win {dwin:.2f} skip {n_dskip}" if A.dynamic_d else ""
+            star = ' *BEST*' if improved else ''
             print(f"[train] step {step:>6} lossD {lossD.item():+.4f} lossG {lossG.item():+.4f} "
-                  f"cons {lc.item():.4f}{dtag}", flush=True)
+                  f"cons {lc.item():.4f} onpath_med {med:.4f}{dtag}{star}", flush=True)
 
-    G.load_state_dict(ema); G.eval()                              # sample from EMA weights
-    os.makedirs(f'{A.out}/shape_dataset', exist_ok=True)
-    torch.save({'ema': ema, 'mean': mean, 'std': std, 'act_cap': act_cap,
-                'args': vars(A), 'FD': FD, 'H': H, 'offpath_frac': data_frac}, f'{A.out}/model.pt')
-    to_phys = make_to_phys(mean, std, c)
+    print(f"[best] checkpoint from step {best_step}: on-path median {best_score:.4f}m", flush=True)
+    save_ckpt(best_ema)                                           # ensure model.pt == best (not last)
+    G.load_state_dict(best_ema); G.eval()                         # generate from the BEST weights
     return _generate(A, dev, G, to_phys, act_cap, H, X, A.latent_dim, A.class_cond, data_frac)
 
 
