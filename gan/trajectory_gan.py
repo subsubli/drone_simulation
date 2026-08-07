@@ -149,6 +149,10 @@ def main():
                          "D(real)-D(fake), so neither side can run away); 'hinge'=absolute hinge")
     ap.add_argument('--r1-gamma', type=float, default=0.0,
                     help='R1 gradient penalty on real (StyleGAN-style); 0=off. Stabilizes rp without WGAN-GP cost')
+    ap.add_argument('--r2-gamma', type=float, default=0.0,
+                    help='R2 gradient penalty on fake (mirror of R1); 0=off. R1+R2 = the full R3GAN recipe')
+    ap.add_argument('--lr-min-frac', type=float, default=1.0,
+                    help='cosine-decay both LRs to this fraction of the base LR by the last step; 1.0=no decay')
     ap.add_argument('--d-reg', choices=['sn', 'gp'], default='sn',
                     help="discriminator Lipschitz control: 'sn'=spectral norm (cheap, no 2nd-order grad); "
                          "'gp'=WGAN gradient penalty")
@@ -257,8 +261,8 @@ def main():
     npar = lambda m: sum(p.numel() for p in m.parameters()) / 1e6
     reg = 'spectral-norm' if use_sn else f'wgan-gp(gp={A.gp_weight})'
     print(f"[model] G={npar(G):.2f}M D={npar(D):.2f}M ch={A.ch} depth={A.depth} latent={A.latent_dim} "
-          f"class_cond={A.class_cond} batch={A.batch} loss={A.loss} r1={A.r1_gamma} d_reg={reg} "
-          f"n_critic={A.n_critic} g_steps={A.g_steps} lr_g={A.lr_g:g} lr_d={A.lr_d:g}")
+          f"class_cond={A.class_cond} batch={A.batch} loss={A.loss} r1={A.r1_gamma} r2={A.r2_gamma} "
+          f"d_reg={reg} lr={A.lr_g:g}->{A.lr_g*A.lr_min_frac:g} n_critic={A.n_critic} g_steps={A.g_steps}")
     optG = torch.optim.Adam(G.parameters(), A.lr_g, betas=(A.beta1, A.beta2))
     optD = torch.optim.Adam(D.parameters(), A.lr_d, betas=(A.beta1, A.beta2))
     ema = {k: v.detach().clone() for k, v in G.state_dict().items()}
@@ -305,13 +309,23 @@ def main():
         w = G(z, cb).clamp(-3.0, 3.0).cpu().numpy()
         G.load_state_dict(bak); G.train()
         pe = np.linalg.norm(to_phys(w)[:, :, 0:3], axis=2)
-        med = float(np.median(pe)); spread = float(pe.std())
-        return med, spread
+        return float(np.median(pe))
+
+    def lr_scale(step):                                          # cosine decay base -> base*lr_min_frac
+        if A.lr_min_frac >= 1.0:
+            return 1.0
+        cos = 0.5 * (1 + np.cos(np.pi * min(1.0, step / max(1, A.steps))))
+        return A.lr_min_frac + (1.0 - A.lr_min_frac) * cos
 
     dwin = 0.5; n_dskip = 0                                       # tracked D win-rate + skip counter
     lossD = torch.tensor(0.0, device=dev)
     best_score = float('inf'); best_ema = {k: v.detach().clone() for k, v in ema.items()}; best_step = 0
     for step in range(A.steps):
+        sc = lr_scale(step)
+        for g in optG.param_groups:
+            g['lr'] = A.lr_g * sc
+        for g in optD.param_groups:
+            g['lr'] = A.lr_d * sc
         #### --- n_critic discriminator updates (dynamically skipped if D already dominates) ---
         skip_d = A.dynamic_d and dwin > A.d_win_thr
         if skip_d:
@@ -328,6 +342,8 @@ def main():
                     real = real.requires_grad_(True)
                 z = torch.randn(A.batch, A.latent_dim, device=dev)
                 fake = G(z, cb).detach()
+                if A.r2_gamma > 0:
+                    fake = fake.requires_grad_(True)
                 dr, df = D(real, cb), D(fake, cb)
                 win = 0.5 * ((dr > 0).float().mean() + (df < 0).float().mean())   # D classification accuracy
                 dwin = A.d_win_ema * dwin + (1 - A.d_win_ema) * win.item()
@@ -338,6 +354,9 @@ def main():
                 if A.r1_gamma > 0:                                # R1: penalize |grad_real D|^2 (StyleGAN/R3GAN)
                     r1 = torch.autograd.grad(dr.sum(), real, create_graph=True)[0]
                     lossD = lossD + 0.5 * A.r1_gamma * r1.reshape(r1.shape[0], -1).pow(2).sum(1).mean()
+                if A.r2_gamma > 0:                                # R2: mirror penalty on fake -> full R3GAN
+                    r2 = torch.autograd.grad(df.sum(), fake, create_graph=True)[0]
+                    lossD = lossD + 0.5 * A.r2_gamma * r2.reshape(r2.shape[0], -1).pow(2).sum(1).mean()
                 if A.d_reg == 'gp':
                     lossD = lossD + A.gp_weight * gp_of(real, fake, cb)
                 optD.zero_grad(); lossD.backward(); optD.step()
@@ -356,10 +375,11 @@ def main():
             for k, v in G.state_dict().items():
                 ema[k].mul_(A.ema).add_(v.detach(), alpha=1 - A.ema)
         if step % A.eval_every == 0:
-            med, spread = quick_eval()
-            #### keep the best checkpoint (lowest on-path median), guarding against a collapsed-to-zero
-            #### generator (spread floor) so we don't select a degenerate mode.
-            improved = med < best_score and spread > 0.02
+            med = quick_eval()
+            #### keep the best checkpoint (lowest on-path median). Floor at 2mm to reject a degenerate
+            #### collapse-to-zero (implausibly tighter than real's 6mm); precise tracking is naturally
+            #### low-spread, so do NOT gate on spread — that wrongly rejected the tightest generators.
+            improved = best_score > med > 0.002
             if improved:
                 best_score = med; best_step = step
                 best_ema = {k: v.detach().clone() for k, v in ema.items()}
