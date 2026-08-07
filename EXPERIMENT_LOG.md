@@ -456,3 +456,32 @@ cc results (§15's unconditioned counterpart in parentheses on the completion/pr
 3. **This proves the §18 gain is entirely DAgger-enabled.** DAgger drives the policy to its own off-path states and labels them with pure-pursuit's raw recovery answer — supplying exactly the mid/long-range recovery coverage cc's data lacks. Fill the hole (DAgger) and cc's cleaner precise-tracking bulk wins (§18); leave it unfilled (init-only) and cc's hole makes it the worst source.
 
 **Headline:** class-conditioning is a **DAgger-conditional** improvement — it makes the generator a better augmentation source *only because* DAgger backfills the recovery coverage the clean separation removes. Init-only it's strictly worse (pure cc catastrophically so), a sharp new instance of the project's core lesson (DAgger decides completion): here data *cleanliness* and pre-DAgger *robustness* are directly opposed. Kept init policies: `runs/merged/…_tvpq` (cc1.5), `…_vhxz` (real0.5+cc1.0), `…_ehsq` (real1.0+cc0.5).
+
+## 20. GAN as an alternative generator — R3GAN matches/beats diffusion at the data level (2026-08-07)
+
+Built `gan/trajectory_gan.py` as a drop-in alternative to the diffusion generator: SAME data pipeline (`load_windows`), asinh(0.05) normalization, per-window on/off-path class + `--offpath-batch-frac` balancing, pos_err↔vel consistency loss, action clamp, checkpoint/`--load` resample, and identical per-episode CSV output, so `build_mix.py` / `merge_shape_dataset.py` / `eval_aug.py` / `pe_dist.py` consume its pool unchanged. Only the generator swaps: a conditional GAN maps latent z (+class) to an H-step window via the same 1D temporal-conv backbone; the discriminator is a conv+global-pool critic with a Miyato projection term for conditioning.
+
+**Stabilization was the whole battle** (the generator collapsed in every naive setup — one side always dominated):
+1. **SN + hinge, symmetric lr** → D over-powers G (lossD→0.06, lossG rising 3→∞), generator diverges (pos_err inf, vel 116).
+2. **TTUR (lr_d = lr_g/4)** → over-corrected, D too weak → **mode collapse** (all windows ≈0.6m; a 30k run even collapsed a 10k-quality 15mm bulk to 264m).
+3. **Dynamic D-skip** (skip D when its win-rate>0.9) → held the loss balance (d_win pinned 0.9) but a weak D still let G collapse.
+4. **R3GAN recipe = RpGAN + R1 + R2 + LR-cosine-decay + best-checkpoint** → STABLE. Relativistic pairing (loss depends only on D(real)−D(fake)) removes the runaway; R1+R2 gradient penalties smooth D; LR decay settles; best-checkpoint (lowest on-path pos_err median, `--eval-every`) captures the peak because GANs are non-monotonic. **on-path median fell monotonically to 8.1mm at step 6500** (past where every earlier setup plateaued/collapsed), then the run still degrades late (median→1m by 9.5k) — but best-checkpoint keeps step 6500, so the saved generator is the peak.
+
+**Data-level comparison — GAN (best ckpt) vs diffusion cc (§17), same asinh/class-cond/offpath-balance:**
+
+| ‖pos_err‖ (m) | median | p99 | max | off-path (>0.2m) | pe_jerk |
+|---|---|---|---|---|---|
+| **GAN on-path** | **0.0083** | 0.136 | 0.29 | 0.56% | 0.0074 |
+| diffusion on-path (§17) | 0.0162 | 0.042 | 0.07 | 0.00% | 0.0021 |
+| GAN off-path | 1.017 | 1.029 | 1.03 | 100% | — |
+| diffusion off-path | 0.993 | 1.030 | 1.04 | 100% | — |
+| GAN natural-mix (7%) | 0.0096 | 1.020 | 1.03 | 7.59% | 0.0075 |
+| diffusion natural-mix | 0.0165 | 1.019 | 1.04 | 7.00% | — |
+| real soft | 0.006 | 3.88 | 5.66 | 6.82% | 0.00135 |
+
+**Two generators, complementary strengths:**
+1. **GAN's precise-tracking bulk is TIGHTER** — on-path median 8.3mm vs diffusion's 16.2mm, approaching real's 6mm. The adversarial objective captures the ultra-tight precise mode that §14 found diffusion's MSE-eps training *couldn't* reproduce (it was stuck ~3× real). This is the GAN's clear win.
+2. **Diffusion's separation is CLEANER and smoother** — on-path leak 0.00% vs GAN's 0.56% (a few GAN windows reach 0.29m), p99 0.042 vs 0.136, and pe_jerk 0.0021 vs GAN's 0.0074 (diffusion trajectories are ~3.5× smoother). Iterative denoising produces cleaner tails and less jitter than the GAN's single-shot generation.
+3. **Both achieve the class-conditional mode separation** — off-path modes are essentially identical (~1m cluster, 100% off-path), and both hold the 7% natural composition.
+
+The GAN roughness (pe_jerk 0.0074 vs diffusion 0.0021) is the open item — diagnostic in progress (tracking whether pe_jerk optimizes at a much later step than the median, = undertraining, or plateaus worse throughout, = structural). GAN generator kept at `gan/gen_gan_cc/model.pt` (best step 6500). Downstream (pool→mix→policy, §18-style) not yet run.

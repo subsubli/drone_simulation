@@ -308,8 +308,10 @@ def main():
         cb = torch.full((256,), CLS_ON, device=dev, dtype=torch.long) if A.class_cond else None
         w = G(z, cb).clamp(-3.0, 3.0).cpu().numpy()
         G.load_state_dict(bak); G.train()
-        pe = np.linalg.norm(to_phys(w)[:, :, 0:3], axis=2)
-        return float(np.median(pe))
+        pev = to_phys(w)[:, :, 0:3]                               # (n, H, 3) pos_err vectors
+        med = float(np.median(np.linalg.norm(pev, axis=2)))      # precise-tracking bulk
+        jerk = float(np.linalg.norm(pev[:, 2:] - 2 * pev[:, 1:-1] + pev[:, :-2], axis=2).mean())  # roughness
+        return med, jerk
 
     def lr_scale(step):                                          # cosine decay base -> base*lr_min_frac
         if A.lr_min_frac >= 1.0:
@@ -320,6 +322,7 @@ def main():
     dwin = 0.5; n_dskip = 0                                       # tracked D win-rate + skip counter
     lossD = torch.tensor(0.0, device=dev)
     best_score = float('inf'); best_ema = {k: v.detach().clone() for k, v in ema.items()}; best_step = 0
+    best_jerk = float('inf'); best_jerk_step = 0                  # track roughness-optimal step separately
     for step in range(A.steps):
         sc = lr_scale(step)
         for g in optG.param_groups:
@@ -375,7 +378,7 @@ def main():
             for k, v in G.state_dict().items():
                 ema[k].mul_(A.ema).add_(v.detach(), alpha=1 - A.ema)
         if step % A.eval_every == 0:
-            med = quick_eval()
+            med, jerk = quick_eval()
             #### keep the best checkpoint (lowest on-path median). Floor at 2mm to reject a degenerate
             #### collapse-to-zero (implausibly tighter than real's 6mm); precise tracking is naturally
             #### low-spread, so do NOT gate on spread — that wrongly rejected the tightest generators.
@@ -384,12 +387,18 @@ def main():
                 best_score = med; best_step = step
                 best_ema = {k: v.detach().clone() for k, v in ema.items()}
                 save_ckpt(best_ema)
+            #### track the roughness-optimal step SEPARATELY (diagnostic): if pe_jerk keeps improving
+            #### well past the median optimum -> undertraining; if it plateaus worse than diffusion
+            #### across the whole run -> structural limit.
+            if jerk < best_jerk:
+                best_jerk = jerk; best_jerk_step = step
             dtag = f" d_win {dwin:.2f} skip {n_dskip}" if A.dynamic_d else ""
             star = ' *BEST*' if improved else ''
             print(f"[train] step {step:>6} lossD {lossD.item():+.4f} lossG {lossG.item():+.4f} "
-                  f"cons {lc.item():.4f} onpath_med {med:.4f}{dtag}{star}", flush=True)
+                  f"cons {lc.item():.4f} onpath_med {med:.4f} pe_jerk {jerk:.5f}{dtag}{star}", flush=True)
 
-    print(f"[best] checkpoint from step {best_step}: on-path median {best_score:.4f}m", flush=True)
+    print(f"[best] median-best step {best_step}: {best_score:.4f}m | "
+          f"jerk-best step {best_jerk_step}: {best_jerk:.5f} (real≈0.00135)", flush=True)
     save_ckpt(best_ema)                                           # ensure model.pt == best (not last)
     G.load_state_dict(best_ema); G.eval()                         # generate from the BEST weights
     return _generate(A, dev, G, to_phys, act_cap, H, X, A.latent_dim, A.class_cond, data_frac)
