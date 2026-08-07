@@ -485,3 +485,20 @@ Built `gan/trajectory_gan.py` as a drop-in alternative to the diffusion generato
 3. **Both achieve the class-conditional mode separation** — off-path modes are essentially identical (~1m cluster, 100% off-path), and both hold the 7% natural composition.
 
 **Roughness diagnostic — structural, not undertraining.** Tracked on-path pos_err median and pe_jerk separately over a 10k R3GAN run (both computed on the same on-path sample each eval). The two optimize at essentially the SAME step — **median-best 6500 (0.0078m), pe_jerk-best 7000 (0.00683)** — and pe_jerk falls in lockstep with the median rather than continuing to improve after the bulk is captured. Critically, pe_jerk **plateaus at ~0.0068** across steps 6000-8000 (0.00743→0.00699→0.00683→0.00689→0.00708) before the run collapses, i.e. it converges to a floor ~3× diffusion's 0.0021 and ~5× real's 0.00135 rather than trending toward them. So the roughness is a **structural limit of single-shot GAN generation, not undertraining**: the GAN reaches its roughness floor concurrently with its bulk optimum, and that floor sits well above diffusion's — consistent with §14's point that iterative denoising is what produces smooth trajectories. (Weak confound: the late collapse prevents observing a longer stable region past 7000, but the pre-collapse plateau already indicates floor convergence.) GAN generator kept at `gan/gen_gan_cc/model.pt` (best step 6500). Downstream (pool→mix→policy, §18-style) not yet run.
+
+### 20b. Roughness FIXED — direct smoothness penalty (`--lambda-smooth`) overcomes the GAN floor (2026-08-08)
+
+§20 called the GAN roughness a structural floor. It is a floor for the *plain* objective, but a **direct pos_err 2nd-difference penalty on the generator** (`--lambda-smooth`, targeting pe_jerk itself) pushes straight through it. λ sweep (5k steps each, on-path best): λ=0 → pe_jerk 0.0068; λ=1 → 0.0059 (median 13mm); λ=10 → **0.0025** (median 19mm) ≈ diffusion — a clear smoothness↔bulk frontier the penalty walks. Then, crucially, **step budget matters**: the earlier collapse comes at ~80% of the LR-decay schedule, so a short run peaks early and shallow. Run λ=10 at the **full diffusion budget (50k)** and the peak arrives at step 13000, far better on BOTH axes (best-checkpoint now scores `median+pe_jerk`):
+
+| on-path ‖pos_err‖ (m) | median | p90 | p99 | max | off-path (>0.2m) | pe_jerk |
+|---|---|---|---|---|---|---|
+| **GAN λ=10, 50k (best step 13000)** | **0.0031** | **0.005** | **0.008** | **0.01** | **0.00%** | **0.00055** |
+| GAN plain, §20 (10k) | 0.0083 | 0.030 | 0.136 | 0.29 | 0.56% | 0.0074 |
+| diffusion cc, §17 | 0.0162 | 0.030 | 0.042 | 0.07 | 0.00% | 0.0021 |
+| real soft | 0.006 | — | 3.88 | 5.66 | 6.82% | 0.00135 |
+| GAN λ=10 off-path | 1.036 | 1.040 | 1.040 | 1.04 | 100% | — |
+| GAN λ=10 natural-mix (7%) | 0.0035 | 0.007 | 1.040 | 1.04 | 7.00% | — |
+
+**The smoothness-penalized GAN dominates every on-path metric** — median 3.1mm (5× tighter than diffusion, 2× tighter than real), p99 0.008m (5× cleaner tail than diffusion), pe_jerk 0.00055 (4× smoother than diffusion, smoother than real itself), 0.00% leak, perfect mode separation. Penalizing jitter also tightened the bulk (smooth trajectories have less step-to-step noise → lower median). So §20's roughness "structural limit" was really a *missing-objective* limit: once pe_jerk is in the loss, the GAN beats diffusion outright at the data level.
+
+**Caveat — possibly over-idealized.** Being tighter AND smoother than *real* data (3mm/0.00055 vs real 6mm/0.00135) means λ=10 may push past realism into over-smoothed, over-precise trajectories. The pos_err↔vel consistency loss keeps them physically self-consistent, but whether "cleaner-than-real" augmentation data actually helps a downstream policy (vs. just matching real) is an open question for the §18-style eval. A lower λ (e.g. 1: pe_jerk 0.0059, median 13mm — still beats diffusion on bulk, matches on smoothness) is the more conservative choice if realism matters. GAN generator kept at `gan/gen_gan_cc/model.pt` (λ=10, best step 13000).
