@@ -502,3 +502,28 @@ Built `gan/trajectory_gan.py` as a drop-in alternative to the diffusion generato
 **The smoothness-penalized GAN dominates every on-path metric** — median 3.1mm (5× tighter than diffusion, 2× tighter than real), p99 0.008m (5× cleaner tail than diffusion), pe_jerk 0.00055 (4× smoother than diffusion, smoother than real itself), 0.00% leak, perfect mode separation. Penalizing jitter also tightened the bulk (smooth trajectories have less step-to-step noise → lower median). So §20's roughness "structural limit" was really a *missing-objective* limit: once pe_jerk is in the loss, the GAN beats diffusion outright at the data level.
 
 **Caveat — possibly over-idealized.** Being tighter AND smoother than *real* data (3mm/0.00055 vs real 6mm/0.00135) means λ=10 may push past realism into over-smoothed, over-precise trajectories. The pos_err↔vel consistency loss keeps them physically self-consistent, but whether "cleaner-than-real" augmentation data actually helps a downstream policy (vs. just matching real) is an open question for the §18-style eval. A lower λ (e.g. 1: pe_jerk 0.0059, median 13mm — still beats diffusion on bulk, matches on smoothness) is the more conservative choice if realism matters. GAN generator kept at `gan/gen_gan_cc/model.pt` (λ=10, best step 13000).
+
+## 21. GAN AUGMENTATION downstream — cleaner-than-real data HELPS precision (2026-08-08)
+
+The §20b caveat asked whether the λ=10 GAN's over-idealized data (3mm, tighter+smoother than real) helps or hurts a downstream policy. Generated a 24k-window pool from `gan/gen_gan_cc/model.pt` (median 3.3mm, off-path 6.97% — natural composition), built the same three §18 mix ratios, ran the identical soft recipe (init 300k → DAgger×2) and 50-seed eval (500-549 × both dirs, + untrained star).
+
+| shape (laps min, trav) / dist | **real1.0M+GAN0.5M** | **real0.5M+GAN1.0M** | **GAN1.5M (pure)** |
+|---|---|---|---|
+| triangle | 2.54 (0.16, **92/100**) | 2.70 (2.65, 100/100) | 2.63 (0.35, **97/100**) |
+| square | 2.76 (0.24, **92/100**) | 2.96 (2.86, 100/100) | 2.95 (2.02, 100/100) |
+| pentagon | 3.15 (0.22, **95/100**) | 3.26 (3.18, 100/100) | 3.27 (3.19, 100/100) |
+| circle | 2.64 (0.53, **95/100**) | 2.74 (2.56, 100/100) | 2.77 (2.74, 100/100) |
+| **TOTAL traverse (4 trained)** | **374/400** | **400/400** | **397/400** |
+| circle dist (m) | 0.098* | **0.009** | **0.008** |
+| tri / sq / pent dist | 0.245* / 0.270* / 0.207* | 0.108 / 0.123 / 0.116 | 0.162* / 0.141 / 0.125 |
+| *star (untrained): trav / dist* | 97/100 / 0.188 | 99/100 / 0.154 | 100/100 / 0.154 |
+
+(*blow-up-inflated means — a few held-out seeds diverged.)
+
+**vs §18 diffusion cc (same ratios): circle dist — real1.0+X0.5: GAN 0.098 vs diff 0.021 · real0.5+X1.0: GAN 0.009 vs diff 0.032 · pure: GAN 0.008 vs diff 0.040.**
+
+**Two findings:**
+1. **Cleaner-than-real data HELPS precision — dramatically, the over-idealization worry was wrong.** On the stable mixes the GAN's 3mm data drives circle tracking to **8-9mm — 4-5× tighter than diffusion (21-40mm) and matching the pure-real-soft baseline (7mm)**. The policy inherits the generator's precision, and the GAN's is far higher, so its data makes a *more precise* policy than diffusion's, contradicting the §15/§18 "precision degrades ∝ diffusion fraction" trend (that held for diffusion because its bulk was 3× looser than real; the GAN's bulk is *tighter* than real). Corners on real0.5+GAN1.0 (0.108/0.123/0.116) also beat diffusion cc's (0.114/0.137/0.141).
+2. **Stability pattern INVERTS — the high-real blend is the unstable one.** §18's unstable point was the 50/50 blend; here it's **real1.0+GAN0.5 = 374/400** (scattered blow-ups across all four shapes), while real0.5+GAN1.0 is perfect (400/400) and pure GAN near-perfect (397/400, only triangle 97). The GAN distribution is *extremely* far from real (3mm vs 6mm bulk, max 1.04m vs 5.7m tail), so the more real heavy-tail data is mixed in, the sharper the distribution conflict — the opposite balance point from diffusion's milder mismatch.
+
+**Best GAN policy = real0.5M+GAN1.0M**: 400/400, circle **9mm**, corners tighter than diffusion cc, star 99/100 — precision AND stability. Headline: the smoothness-penalized GAN is not just a data-level curiosity — its ultra-precise data yields the **most precise augmented policy in the project** (matching pure-real precision from mostly-synthetic data), at some cost to blend stability when real dominates. Final policies: `mix_gan1.5` / `mix_r0.5_gan1.0` / `mix_r1.0_gan0.5` d2 runs. (Initial-only §19-analog eval still pending — init policies preserved.)
