@@ -171,6 +171,9 @@ def main():
                     help='every N steps, score the EMA generator and keep the best checkpoint (GANs are non-monotonic)')
     ap.add_argument('--lambda-cons', type=float, default=0.1,
                     help='weight of the pos_err<->vel physical-consistency loss on generated windows (0 disables)')
+    ap.add_argument('--lambda-smooth', type=float, default=0.0,
+                    help='weight of a direct pos_err smoothness (2nd-difference) penalty on generated windows; '
+                         'targets pe_jerk (roughness) directly. 0=off. Too high oversmooths the bulk')
     ap.add_argument('--act-cap', type=float, default=0.0,
                     help='cap generated |action| at this m/s; <=0 uses the real data max')
     ap.add_argument('--pe-asinh', type=float, default=0.0,
@@ -290,6 +293,11 @@ def main():
         acc_tgt = d_tgt[:, 1:] - d_tgt[:, :-1]
         return (acc_tgt ** 2).mean()
 
+    def smooth_loss(gnorm):                                       # direct roughness penalty = pos_err 2nd-difference
+        pe = gnorm[..., PE]                                       # normalized pos_err (asinh-zscore space)
+        acc = pe[:, 2:] - 2 * pe[:, 1:-1] + pe[:, :-2]            # discrete 2nd derivative = pe_jerk's target
+        return (acc ** 2).mean()
+
     to_phys = make_to_phys(mean, std, c)
     os.makedirs(f'{A.out}/shape_dataset', exist_ok=True)
 
@@ -373,18 +381,20 @@ def main():
             else:
                 lossG = -D(fake, cb).mean()
             lc = cons_loss(fake) if A.lambda_cons > 0 else torch.tensor(0.0, device=dev)
-            optG.zero_grad(); (lossG + A.lambda_cons * lc).backward(); optG.step()
+            ls = smooth_loss(fake) if A.lambda_smooth > 0 else torch.tensor(0.0, device=dev)
+            optG.zero_grad(); (lossG + A.lambda_cons * lc + A.lambda_smooth * ls).backward(); optG.step()
         with torch.no_grad():
             for k, v in G.state_dict().items():
                 ema[k].mul_(A.ema).add_(v.detach(), alpha=1 - A.ema)
         if step % A.eval_every == 0:
             med, jerk = quick_eval()
-            #### keep the best checkpoint (lowest on-path median). Floor at 2mm to reject a degenerate
-            #### collapse-to-zero (implausibly tighter than real's 6mm); precise tracking is naturally
-            #### low-spread, so do NOT gate on spread — that wrongly rejected the tightest generators.
-            improved = best_score > med > 0.002
+            #### keep the best checkpoint by a COMBINED score = on-path median + pe_jerk (both want low),
+            #### so a smoothness-penalized run (--lambda-smooth) actually captures its low-jerk point, not
+            #### just the tightest-bulk one. Floor med>2mm rejects a degenerate collapse-to-zero.
+            score = med + jerk
+            improved = best_score > score and med > 0.002
             if improved:
-                best_score = med; best_step = step
+                best_score = score; best_step = step
                 best_ema = {k: v.detach().clone() for k, v in ema.items()}
                 save_ckpt(best_ema)
             #### track the roughness-optimal step SEPARATELY (diagnostic): if pe_jerk keeps improving
@@ -395,9 +405,10 @@ def main():
             dtag = f" d_win {dwin:.2f} skip {n_dskip}" if A.dynamic_d else ""
             star = ' *BEST*' if improved else ''
             print(f"[train] step {step:>6} lossD {lossD.item():+.4f} lossG {lossG.item():+.4f} "
-                  f"cons {lc.item():.4f} onpath_med {med:.4f} pe_jerk {jerk:.5f}{dtag}{star}", flush=True)
+                  f"cons {lc.item():.4f} smooth {ls.item():.4f} onpath_med {med:.4f} pe_jerk {jerk:.5f}{dtag}{star}",
+                  flush=True)
 
-    print(f"[best] median-best step {best_step}: {best_score:.4f}m | "
+    print(f"[best] combined-best (median+jerk) step {best_step}: score {best_score:.4f} | "
           f"jerk-best step {best_jerk_step}: {best_jerk:.5f} (real≈0.00135)", flush=True)
     save_ckpt(best_ema)                                           # ensure model.pt == best (not last)
     G.load_state_dict(best_ema); G.eval()                         # generate from the BEST weights
