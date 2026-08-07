@@ -544,3 +544,22 @@ The §20b caveat asked whether the λ=10 GAN's over-idealized data (3mm, tighter
 **The cleaner the data, the harder the pre-DAgger divergence — monotonic across generators.** Init-only |pos_err|: real/unconditioned-diffusion stay <1m (SLOW-but-valid, some traverse), cc blows to ~21m, and the ultra-clean GAN is the worst yet — **pure GAN reaches 8–10m mean / 47m max with coverage 0.07** (it barely advances one path index before flying off). Mechanism (same as §19, sharper): the GAN's near-perfect separation means the training data has essentially nothing in the 0.01–1m mid-range and nothing past 1.04m, so a DAgger-less init that drifts into that void has zero learned recovery and diverges without bound; real's heavy tail (to 5.7m) is what caps divergence, so the pure (no-real) GAN blows out hardest.
 
 **The DAgger-conditional inversion is now complete and monotonic:** the SAME data ranking flips between the two regimes. WITH DAgger (§21) the cleanest data is BEST (pure/GAN-heavy → circle 8–9mm, most precise policy in the project); WITHOUT DAgger the cleanest data is WORST (pure GAN → 47m divergence). DAgger backfills exactly the mid/long-range recovery coverage that data cleanliness removes — so generator-side precision and pre-DAgger robustness are strictly opposed, and the opposition grows with how clean the generator is (real < diffusion < cc < GAN). Init policies kept (`runs/merged/…_csnw` gan1.5, `…_qlop` r0.5gan1.0, `…_crwe` r1.0gan0.5).
+
+### 21c. 100%-on-path GAN (ZERO recovery data) — the 7% off-path is DAgger's minimum foothold (2026-08-08)
+
+§21b showed cleaner data → harder pre-DAgger divergence. This pushes it to the limit: a 1.5M-row pool of **pure on-path GAN windows (0.00% off-path**, median 3.1mm, max 0.02m — no recovery data at all), then the usual init + DAgger×2. Both stats (p99 = pooled per-step |pos_err| tail, now reported by `eval_aug`):
+
+| shape (laps min, trav) / dist | INIT-only (no DAgger) | FINAL (DAgger×2) |
+|---|---|---|
+| triangle | 0.22 (0.00, **0/20**), dist 5.0 / p99 **52.6** | 2.33 (0.00, **82/100**), 0.42 / p99 3.10 |
+| square | 0.19 (0.04, 0/20), 2.9 / p99 6.9 | 2.60 (0.16, **84/100**), 0.45 / p99 3.73 |
+| pentagon | 0.17 (0.00, 0/20), 2.7 / p99 6.5 | 2.97 (0.17, **89/100**), 0.36 / p99 3.55 |
+| circle | 0.13 (0.01, 0/20), 3.0 / p99 9.4 | 2.74 (0.73, **98/100**), 0.043 / p90 0.013 / p99 2.36 |
+| star (untrained) | — | 3.31 (2.42, 100/100), 0.159 / p99 0.43 |
+| **TOTAL traverse (4 trained)** | **0/80** (LOST, cov 0.07, max 67m) | **353/400** |
+
+**Removing the last 7% recovery hurts BOTH regimes:**
+1. **init-only is the worst divergence in the whole project** — 0/80, coverage 0.07 (barely advances one index before flying off), triangle p99 **52.6m** / max 67m. With literally zero off-path data the on-path attractor has *nothing* around it, so any drift is unrecoverable — even worse than §21b's 7%-off GAN pure (max 47m). Monotone endpoint of real<diffusion<cc<GAN(7%)<GAN(0%).
+2. **DAgger×2 CANNOT fully rescue it — 353/400 vs the 7%-off GAN pure's 397/400.** The trained shapes keep held-out blow-ups (triangle 82/100, square 84/100) that DAgger cleared on every recovery-containing dataset. DAgger injects its own corner-kick recovery, but from a base that ignores the entire off-path space so sharply, two passes can't cover enough of it. **So the 7% off-path recovery in the normal pool was not optional — it is the minimum foothold DAgger builds on.** (Circle survives best at 98/100 because it is corner-free; the polygons' sharp corners are where the missing recovery data bites.)
+
+Contrast with §21: the 7%-recovery GAN pure reached 397/400 and circle 8mm. Strip the 7% and completion falls to 353/400 with corner blow-ups — confirming recovery data and DAgger are complementary, not redundant: DAgger amplifies whatever recovery foundation the data provides, but cannot manufacture it from nothing. Policies: init `runs/merged/…_lryr`, final `runs/d2_merged/…_cusj`; dataset `mix_gan1.5_onpath`.
