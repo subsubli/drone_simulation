@@ -147,7 +147,15 @@ def main():
     ap.add_argument('--d-reg', choices=['sn', 'gp'], default='sn',
                     help="discriminator Lipschitz control: 'sn'=spectral norm + hinge loss (cheaper, "
                          "no 2nd-order grad); 'gp'=WGAN gradient penalty")
-    ap.add_argument('--n-critic', type=int, default=1, help='D updates per G update (SN-hinge: 1; WGAN-GP: ~5)')
+    ap.add_argument('--n-critic', type=int, default=1, help='D updates per outer step (SN-hinge: 1; WGAN-GP: ~5)')
+    ap.add_argument('--g-steps', type=int, default=1,
+                    help='G updates per outer step; >1 gives the generator more updates than D when D over-powers G')
+    #### dynamic D-skip: when D is winning too easily, stop updating it until G catches up ####
+    ap.add_argument('--dynamic-d', action='store_true',
+                    help='skip the D update on steps where D is already winning (EMA win-rate > --d-win-thr)')
+    ap.add_argument('--d-win-thr', type=float, default=0.9,
+                    help='D win-rate above which D updates are skipped (only with --dynamic-d)')
+    ap.add_argument('--d-win-ema', type=float, default=0.99, help='EMA decay for the tracked D win-rate')
     ap.add_argument('--gp-weight', type=float, default=10.0, help='WGAN gradient-penalty weight (only if --d-reg gp)')
     ap.add_argument('--ema', type=float, default=0.999, help='EMA on the generator weights for sampling')
     ap.add_argument('--lambda-cons', type=float, default=0.1,
@@ -242,7 +250,8 @@ def main():
     npar = lambda m: sum(p.numel() for p in m.parameters()) / 1e6
     reg = 'spectral-norm+hinge' if use_sn else f'wgan-gp(gp={A.gp_weight})'
     print(f"[model] G={npar(G):.2f}M D={npar(D):.2f}M ch={A.ch} depth={A.depth} latent={A.latent_dim} "
-          f"class_cond={A.class_cond} batch={A.batch} n_critic={A.n_critic} d_reg={reg}")
+          f"class_cond={A.class_cond} batch={A.batch} n_critic={A.n_critic} g_steps={A.g_steps} "
+          f"lr_g={A.lr_g:g} lr_d={A.lr_d:g} d_reg={reg}")
     optG = torch.optim.Adam(G.parameters(), A.lr_g, betas=(A.beta1, A.beta2))
     optD = torch.optim.Adam(D.parameters(), A.lr_d, betas=(A.beta1, A.beta2))
     ema = {k: v.detach().clone() for k, v in G.state_dict().items()}
@@ -270,31 +279,46 @@ def main():
         acc_tgt = d_tgt[:, 1:] - d_tgt[:, :-1]
         return (acc_tgt ** 2).mean()
 
+    dwin = 0.5; n_dskip = 0                                       # tracked D win-rate + skip counter
+    lossD = torch.tensor(0.0, device=dev)
     for step in range(A.steps):
-        #### --- n_critic discriminator updates ---
-        for _ in range(A.n_critic):
-            real, cb = draw(A.batch)
+        #### --- n_critic discriminator updates (dynamically skipped if D already dominates) ---
+        skip_d = A.dynamic_d and dwin > A.d_win_thr
+        if skip_d:
+            n_dskip += 1
+            with torch.no_grad():                                # still measure win-rate so dwin decays -> D resumes
+                real, cb = draw(A.batch)
+                fake = G(torch.randn(A.batch, A.latent_dim, device=dev), cb)
+                win = 0.5 * ((D(real, cb) > 0).float().mean() + (D(fake, cb) < 0).float().mean())
+                dwin = A.d_win_ema * dwin + (1 - A.d_win_ema) * win.item()
+        else:
+            for _ in range(A.n_critic):
+                real, cb = draw(A.batch)
+                z = torch.randn(A.batch, A.latent_dim, device=dev)
+                fake = G(z, cb).detach()
+                dr, df = D(real, cb), D(fake, cb)
+                win = 0.5 * ((dr > 0).float().mean() + (df < 0).float().mean())   # D classification accuracy
+                dwin = A.d_win_ema * dwin + (1 - A.d_win_ema) * win.item()
+                if use_sn:                                        # spectral-norm path: hinge loss, no GP
+                    lossD = F.relu(1.0 - dr).mean() + F.relu(1.0 + df).mean()
+                else:                                             # WGAN-GP path
+                    lossD = df.mean() - dr.mean() + A.gp_weight * gp_of(real, fake, cb)
+                optD.zero_grad(); lossD.backward(); optD.step()
+        #### --- g_steps generator updates (>1 rebalances when D over-powers G) ---
+        for _ in range(A.g_steps):
+            _, cb = draw(A.batch)
             z = torch.randn(A.batch, A.latent_dim, device=dev)
-            fake = G(z, cb).detach()
-            if use_sn:                                            # spectral-norm path: hinge loss, no GP
-                lossD = F.relu(1.0 - D(real, cb)).mean() + F.relu(1.0 + D(fake, cb)).mean()
-            else:                                                 # WGAN-GP path
-                lossD = D(fake, cb).mean() - D(real, cb).mean() + A.gp_weight * gp_of(real, fake, cb)
-            optD.zero_grad(); lossD.backward(); optD.step()
-        #### --- one generator update ---
-        _, cb = draw(A.batch)
-        z = torch.randn(A.batch, A.latent_dim, device=dev)
-        fake = G(z, cb)
-        lossG = -D(fake, cb).mean()
-        lc = cons_loss(fake) if A.lambda_cons > 0 else torch.tensor(0.0, device=dev)
-        (lossG + A.lambda_cons * lc).backward()
-        optG.step(); optG.zero_grad()
+            fake = G(z, cb)
+            lossG = -D(fake, cb).mean()
+            lc = cons_loss(fake) if A.lambda_cons > 0 else torch.tensor(0.0, device=dev)
+            optG.zero_grad(); (lossG + A.lambda_cons * lc).backward(); optG.step()
         with torch.no_grad():
             for k, v in G.state_dict().items():
                 ema[k].mul_(A.ema).add_(v.detach(), alpha=1 - A.ema)
         if step % 2000 == 0:
+            dtag = f" d_win {dwin:.2f} skip {n_dskip}" if A.dynamic_d else ""
             print(f"[train] step {step:>6} lossD {lossD.item():+.4f} lossG {lossG.item():+.4f} "
-                  f"cons {lc.item():.4f}", flush=True)
+                  f"cons {lc.item():.4f}{dtag}", flush=True)
 
     G.load_state_dict(ema); G.eval()                              # sample from EMA weights
     os.makedirs(f'{A.out}/shape_dataset', exist_ok=True)
@@ -310,7 +334,9 @@ def _generate(A, dev, G, to_phys, act_cap, H, X, latent, class_cond=False, data_
     def sample(n, cls=None):
         z = torch.randn(n, latent, device=dev)
         cb = torch.full((n,), cls, device=dev, dtype=torch.long) if (class_cond and cls is not None) else None
-        return G(z, cb).cpu().numpy()
+        #### clamp the normalized output to a generous range so a spiky G can't blow the asinh sinh
+        #### inverse up to inf/nan (real asinh-normalized data sits well within +-8); safety net only.
+        return G(z, cb).clamp(-8.0, 8.0).cpu().numpy()
 
     def pe_jerk(Gphys):
         pe = Gphys[:, :, 0:3]
