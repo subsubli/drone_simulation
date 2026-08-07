@@ -507,18 +507,18 @@ Built `gan/trajectory_gan.py` as a drop-in alternative to the diffusion generato
 
 The §20b caveat asked whether the λ=10 GAN's over-idealized data (3mm, tighter+smoother than real) helps or hurts a downstream policy. Generated a 24k-window pool from `gan/gen_gan_cc/model.pt` (median 3.3mm, off-path 6.97% — natural composition), built the same three §18 mix ratios, ran the identical soft recipe (init 300k → DAgger×2) and 50-seed eval (500-549 × both dirs, + untrained star).
 
-| shape (laps min, trav) / dist | **real1.0M+GAN0.5M** | **real0.5M+GAN1.0M** | **GAN1.5M (pure)** |
-|---|---|---|---|
-| triangle | 2.54 (0.16, **92/100**) | 2.70 (2.65, 100/100) | 2.63 (0.35, **97/100**) |
-| square | 2.76 (0.24, **92/100**) | 2.96 (2.86, 100/100) | 2.95 (2.02, 100/100) |
-| pentagon | 3.15 (0.22, **95/100**) | 3.26 (3.18, 100/100) | 3.27 (3.19, 100/100) |
-| circle | 2.64 (0.53, **95/100**) | 2.74 (2.56, 100/100) | 2.77 (2.74, 100/100) |
-| **TOTAL traverse (4 trained)** | **374/400** | **400/400** | **397/400** |
-| circle dist (m) | 0.098* | **0.009** | **0.008** |
-| tri / sq / pent dist | 0.245* / 0.270* / 0.207* | 0.108 / 0.123 / 0.116 | 0.162* / 0.141 / 0.125 |
-| *star (untrained): trav / dist* | 97/100 / 0.188 | 99/100 / 0.154 | 100/100 / 0.154 |
+| shape (laps min, trav) / dist | soft real1.5M (all-real ref) | real1.0M+GAN0.5M | real0.5M+GAN1.0M | GAN1.5M (pure) |
+|---|---|---|---|---|
+| triangle | 2.71 (2.65, 100/100) | 2.54 (0.16, **92/100**) | 2.70 (2.65, 100/100) | 2.63 (0.35, **97/100**) |
+| square | 2.99 (2.90, 100/100) | 2.76 (0.24, **92/100**) | 2.96 (2.86, 100/100) | 2.95 (2.02, 100/100) |
+| pentagon | 3.30 (3.20, 100/100) | 3.15 (0.22, **95/100**) | 3.26 (3.18, 100/100) | 3.27 (3.19, 100/100) |
+| circle | 2.76 (2.57, 100/100) | 2.64 (0.53, **95/100**) | 2.74 (2.56, 100/100) | 2.77 (2.74, 100/100) |
+| **TOTAL traverse (4 trained)** | **400/400** | **374/400** | **400/400** | **397/400** |
+| circle dist (m) | **0.007** | 0.098* | **0.009** | **0.008** |
+| tri / sq / pent dist | 0.104 / 0.116 / 0.109 | 0.245* / 0.270* / 0.207* | 0.108 / 0.123 / 0.116 | 0.162* / 0.141 / 0.125 |
+| *star (untrained): trav / dist* | 98/100 / 0.165 | 97/100 / 0.188 | 99/100 / 0.154 | 100/100 / 0.154 |
 
-(*blow-up-inflated means — a few held-out seeds diverged.)
+(*blow-up-inflated means — a few held-out seeds diverged. soft real1.5M ref = §15/Table 15, the all-real baseline.)
 
 **vs §18 diffusion cc (same ratios): circle dist — real1.0+X0.5: GAN 0.098 vs diff 0.021 · real0.5+X1.0: GAN 0.009 vs diff 0.032 · pure: GAN 0.008 vs diff 0.040.**
 
@@ -527,3 +527,20 @@ The §20b caveat asked whether the λ=10 GAN's over-idealized data (3mm, tighter
 2. **Stability pattern INVERTS — the high-real blend is the unstable one.** §18's unstable point was the 50/50 blend; here it's **real1.0+GAN0.5 = 374/400** (scattered blow-ups across all four shapes), while real0.5+GAN1.0 is perfect (400/400) and pure GAN near-perfect (397/400, only triangle 97). The GAN distribution is *extremely* far from real (3mm vs 6mm bulk, max 1.04m vs 5.7m tail), so the more real heavy-tail data is mixed in, the sharper the distribution conflict — the opposite balance point from diffusion's milder mismatch.
 
 **Best GAN policy = real0.5M+GAN1.0M**: 400/400, circle **9mm**, corners tighter than diffusion cc, star 99/100 — precision AND stability. Headline: the smoothness-penalized GAN is not just a data-level curiosity — its ultra-precise data yields the **most precise augmented policy in the project** (matching pure-real precision from mostly-synthetic data), at some cost to blend stability when real dominates. Final policies: `mix_gan1.5` / `mix_r0.5_gan1.0` / `mix_r1.0_gan0.5` d2 runs. (Initial-only §19-analog eval still pending — init policies preserved.)
+
+### 21b. GAN INITIAL-ONLY (no DAgger) — the coverage hole is WORST for the cleanest data (2026-08-08)
+
+§19 found cc's clean separation inverts pre-DAgger (all 0/80 LOST, pure cc catastrophic ~21m). The λ=10 GAN data is even cleaner (3mm bulk, off-path a tight 1.04m cluster with NOTHING between 0.01m and 1m and nothing beyond), so this is the sharp test. Init-only eval (§19 protocol, 10 seeds × both dirs; `eval_stuck.py` 3-seed verdict):
+
+| init-only (no DAgger) | traverse | mean dist (m) | max dist | cov | verdict |
+|---|---|---|---|---|---|
+| **GAN1.5 (pure)** | **0/80** | **8.5–10.6** | **31–47** | 0.07 | **LOST (barely moves, flies off)** |
+| real0.5M+GAN1.0M | 0/80 | 2.9–4.3 | 7.8–17 | 0.25 | LOST |
+| real1.0M+GAN0.5M | 0/80 | 3.7–7.9 | 15–22 | 0.28 | LOST |
+| *(ref) §19 pure cc* | *0/80* | *~21* | — | — | *LOST* |
+| *(ref) §16 pure diffusion* | *7/80* | *<1* | — | — | *SLOW-but-valid* |
+| *(ref) §16 soft real1.5M* | *24/80* | *<1* | — | — | *SLOW-but-valid* |
+
+**The cleaner the data, the harder the pre-DAgger divergence — monotonic across generators.** Init-only |pos_err|: real/unconditioned-diffusion stay <1m (SLOW-but-valid, some traverse), cc blows to ~21m, and the ultra-clean GAN is the worst yet — **pure GAN reaches 8–10m mean / 47m max with coverage 0.07** (it barely advances one path index before flying off). Mechanism (same as §19, sharper): the GAN's near-perfect separation means the training data has essentially nothing in the 0.01–1m mid-range and nothing past 1.04m, so a DAgger-less init that drifts into that void has zero learned recovery and diverges without bound; real's heavy tail (to 5.7m) is what caps divergence, so the pure (no-real) GAN blows out hardest.
+
+**The DAgger-conditional inversion is now complete and monotonic:** the SAME data ranking flips between the two regimes. WITH DAgger (§21) the cleanest data is BEST (pure/GAN-heavy → circle 8–9mm, most precise policy in the project); WITHOUT DAgger the cleanest data is WORST (pure GAN → 47m divergence). DAgger backfills exactly the mid/long-range recovery coverage that data cleanliness removes — so generator-side precision and pre-DAgger robustness are strictly opposed, and the opposition grows with how clean the generator is (real < diffusion < cc < GAN). Init policies kept (`runs/merged/…_csnw` gan1.5, `…_qlop` r0.5gan1.0, `…_crwe` r1.0gan0.5).
