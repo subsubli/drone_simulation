@@ -334,9 +334,10 @@ def _generate(A, dev, G, to_phys, act_cap, H, X, latent, class_cond=False, data_
     def sample(n, cls=None):
         z = torch.randn(n, latent, device=dev)
         cb = torch.full((n,), cls, device=dev, dtype=torch.long) if (class_cond and cls is not None) else None
-        #### clamp the normalized output to a generous range so a spiky G can't blow the asinh sinh
-        #### inverse up to inf/nan (real asinh-normalized data sits well within +-8); safety net only.
-        return G(z, cb).clamp(-8.0, 8.0).cpu().numpy()
+        #### clamp the normalized output to [-3,3] — same range the diffusion sampler keeps its
+        #### samples in. Real asinh-normalized data (incl. ~1m off-path recovery) sits within this,
+        #### so it preserves the legit distribution while clipping rare G blow-ups (else sinh -> inf).
+        return G(z, cb).clamp(-3.0, 3.0).cpu().numpy()
 
     def pe_jerk(Gphys):
         pe = Gphys[:, :, 0:3]
