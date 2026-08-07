@@ -45,7 +45,8 @@ def rollout(shape, seed, cw, policy, mean, std, include_la, out):
         rows = list(csv.DictReader(f))
     pe = np.array([[float(r['tx-x']), float(r['ty-y']), float(r['tz-z'])] for r in rows])
     os.remove(csvf)                       # keep the folder from growing / stale-mtime races
-    return laps, cov, float(np.linalg.norm(pe, axis=1).mean())
+    pen = np.linalg.norm(pe, axis=1)      # per-step |pos_err| over the whole rollout
+    return laps, cov, float(pen.mean()), pen
 
 
 def main():
@@ -63,21 +64,24 @@ def main():
     os.makedirs(os.path.join(out, 'shape_dataset'), exist_ok=True)
 
     print(f"# eval {A.label or os.path.basename(A.run_dir.rstrip('/'))}  seeds {A.seeds[0]}-{A.seeds[-1]} x both dirs")
-    print(f"{'shape':10} {'laps mean±std':>16} {'min':>5} {'trav':>6} {'dist mean±std':>16} {'max':>7}")
+    print(f"{'shape':10} {'laps mean±std':>16} {'min':>5} {'trav':>6} {'dist mean±std':>16} "
+          f"{'p90':>6} {'p99':>6} {'max':>7}")
     summary = {}
     for shape in A.shapes:
-        laps, dists = [], []
+        laps, dists, pe_pool = [], [], []
         for seed in A.seeds:
             for cw in (False, True):
-                l, cov, derr = rollout(shape, seed, cw, policy, mean, std, include_la, out)
-                laps.append(l); dists.append(derr)
+                l, cov, derr, pen = rollout(shape, seed, cw, policy, mean, std, include_la, out)
+                laps.append(l); dists.append(derr); pe_pool.append(pen)
         laps, dists = np.array(laps), np.array(dists)
+        pe_all = np.concatenate(pe_pool)                          # per-step |pos_err| pooled over all rollouts
+        p90, p99, pmax = (float(np.percentile(pe_all, 90)), float(np.percentile(pe_all, 99)), float(pe_all.max()))
         trav = int((laps >= 2.0).sum())
         print(f"{shape:10} {laps.mean():>7.2f}±{laps.std():<7.2f} {laps.min():>5.2f} {trav:>3}/{len(laps)} "
-              f"{dists.mean():>7.3f}±{dists.std():<7.3f} {dists.max():>7.3f}")
+              f"{dists.mean():>7.3f}±{dists.std():<7.3f} {p90:>6.3f} {p99:>6.3f} {pmax:>7.3f}")
         summary[shape] = dict(laps_mean=laps.mean(), laps_std=laps.std(), laps_min=laps.min(),
                               trav=trav, n=len(laps), dist_mean=dists.mean(), dist_std=dists.std(),
-                              dist_max=dists.max())
+                              dist_p90=p90, dist_p99=p99, dist_max=pmax)
     total_trav = sum(s['trav'] for s in summary.values())
     total_n = sum(s['n'] for s in summary.values())
     print(f"# TOTAL traverse: {total_trav}/{total_n}")
