@@ -646,3 +646,18 @@ The off-path branch collapses to a tight ~1m cluster (§17/§22). Tested whether
 mbstd spread the cluster a little *within* 0.2–1m (median 1.02→0.85, partially filling the mid-range hole) but **max stayed 1.03m — the 3–5m recovery tail is still absent**, and it *destabilized* on-path (best collapsed at step 2000, combined score 0.021 vs the clean λ=10 run's 0.0035 at step 13000). Net negative.
 
 **Conclusion (confirms the scarcity hypothesis):** the soft dataset has only ~3,228 off-path windows (6.8%) and the 3–5m recovery tail is extremely sparse within them, so single-shot diversity regularization can't *manufacture* a range that's barely in the data — it only redistributes density where data already exists. The off-path range limit is a **data** constraint, not an optimization/mode-collapse one. Widening it would need more off-path data (e.g. the original dirty perturbation dataset, off-path 78.8%), not diversity tricks. GAN generator stays the clean λ=10 config; the `--mbstd` code was removed after this negative result (documented here only).
+
+## 23. Tightening the diffusion bulk — direct x0 pos_err penalty (not min-SNR) (2026-08-09)
+
+§14/§22 left the diffusion generator's one weakness open: a loose precise-tracking bulk (on-path median 16mm vs real 6mm, GAN 3mm), attributed to eps-MSE. Tested two levers at fixed budget. min-SNR-γ weighting (`--min-snr-gamma`, the standard "sample-quality" fix) and a **direct x0 pos_err reconstruction penalty** (`--lambda-x0pe`: `abar · ‖x0_pred_pe − x0_pe‖²`, confidence-weighted to bite at low noise where fine detail is resolved — the diffusion analog of the GAN smoothness term).
+
+30k diagnostic (on-path median / pe_jerk): uniform 0.050 / 0.0027 · min-snr5 **0.022** / **0.0069** · x0pe1 **0.019** / 0.0022. Both tighten the bulk ~2.5×, but **min-SNR roughens** (pe_jerk 0.0027→0.0069 — it down-weights the low-noise timesteps that carry fine detail, exactly the wrong direction for eps-prediction), while **x0pe tightens without the roughness cost**. Full 50k x0pe-1.0:
+
+| on-path ‖pos_err‖ (m) | median | p90 | p99 | max | off-path | pe_jerk |
+|---|---|---|---|---|---|---|
+| diffusion uniform, §17 (50k) | 0.0162 | 0.030 | 0.042 | 0.07 | 0.00% | 0.0021 |
+| **diffusion + x0pe-1.0 (50k)** | **0.0120** | 0.026 | 0.059 | 0.11 | 0.00% | 0.0021 |
+| GAN λ=10 | 0.0031 | 0.005 | 0.008 | 0.01 | 0.00% | 0.00055 |
+| real soft | 0.006 | — | 3.88 | 5.66 | 6.82% | 0.00135 |
+
+**x0pe tightens the diffusion bulk 16mm → 12mm (~26%) for free — smoothness (pe_jerk 0.0021) and the perfect 0% class separation preserved — but does NOT reach the GAN's 3mm.** The residual ~12mm floor is the eps-MSE mode-averaging limit: the direct penalty softens it but can't eliminate it, whereas the GAN's adversarial objective has no such averaging and hits 3mm. So the honest picture: (1) **my initial min-SNR suggestion was wrong** for this goal — it trades bulk for roughness; (2) the direct x0-pe penalty is the right lever and a genuine modest win, so the *stable* diffusion generator can be made ~25% more precise at zero cost; (3) but ultra-tight bulk (3mm, sub-real) stays a GAN-only capability — adversarial beats denoising-MSE on the finest precise-tracking detail, matching §20b's mechanism. Improved generator kept at `diffusion/gen_traj_cc_x0pe/model.pt`.
