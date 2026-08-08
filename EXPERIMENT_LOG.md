@@ -563,3 +563,27 @@ The §20b caveat asked whether the λ=10 GAN's over-idealized data (3mm, tighter
 2. **DAgger×2 CANNOT fully rescue it — 353/400 vs the 7%-off GAN pure's 397/400.** The trained shapes keep held-out blow-ups (triangle 82/100, square 84/100) that DAgger cleared on every recovery-containing dataset. DAgger injects its own corner-kick recovery, but from a base that ignores the entire off-path space so sharply, two passes can't cover enough of it. **So the 7% off-path recovery in the normal pool was not optional — it is the minimum foothold DAgger builds on.** (Circle survives best at 98/100 because it is corner-free; the polygons' sharp corners are where the missing recovery data bites.)
 
 Contrast with §21: the 7%-recovery GAN pure reached 397/400 and circle 8mm. Strip the 7% and completion falls to 353/400 with corner blow-ups — confirming recovery data and DAgger are complementary, not redundant: DAgger amplifies whatever recovery foundation the data provides, but cannot manufacture it from nothing. Policies: init `runs/merged/…_lryr`, final `runs/d2_merged/…_cusj`; dataset `mix_gan1.5_onpath`.
+
+## 22. CONSOLIDATED downstream reference — completion + precision with p99 tails (2026-08-08)
+
+All downstream policies re-evaluated with pooled per-step |pos_err| percentiles (`eval_aug` now reports p90/p99/pooled-max, not just the per-rollout mean that hid corner-overshoot and blow-up tails). 50 seeds × both dirs = 100 rollouts/shape. "corner" = tri/sq/pent averaged; "circle" = the corner-free pure-precision probe. Key reference table:
+
+| policy (init data) | trav (4-shape) | circle mean | circle **p99** | corner mean | corner **p99** | star trav |
+|---|---|---|---|---|---|---|
+| **soft real1.5M (all real)** | 400/400 | 0.007 | **0.021** | 0.110 | **0.428** | 98/100 |
+| real1.0M+cc0.5M | 399/400 | 0.021 | 0.092 | 0.131 | 0.478 | 100/100 |
+| real0.5M+cc1.0M | 399/400 | 0.032 | 0.103 | 0.131 | 0.482 | 99/100 |
+| cc1.5M (pure diffusion) | 400/400 | 0.040 | 0.127 | 0.120 | 0.453 | 100/100 |
+| real1.0M+GAN0.5M | **374/400** | 0.098 | **3.06** | 0.241 | **3.22** | 97/100 |
+| **real0.5M+GAN1.0M** | **400/400** | **0.009** | **0.027** | 0.116 | 0.449 | 99/100 |
+| GAN1.5M (pure) | 397/400 | **0.008** | **0.025** | 0.143 | 1.085* | 100/100 |
+| GAN 100%-on-path (§21c) | 353/400 | 0.043 | 2.36* | 0.41* | 3.46* | 100/100 |
+
+(*blow-up-inflated — held-out divergences live entirely in the p99/max tail; the p90 beneath is tight, e.g. r1.0GAN0.5 circle p90 0.027, gan1.5 triangle p90 0.389.)
+
+**What p99 reveals that the mean hid:**
+1. **Circle (pure precision) is where generators actually differ, and the smoothed GAN wins outright.** circle p99: soft **0.021** ≈ GAN pure/half **0.025/0.027** ≪ diffusion cc **0.092–0.127**. The GAN's circle tail essentially *matches all-real*; diffusion cc's tail is 4–6× worse. So the §20b data-level tightness carries through to the policy: GAN-augmented circle tracking is real-quality, diffusion-augmented is visibly looser even at p99.
+2. **Corner shapes are a SHARED structural tail, generator-independent (~0.43–0.48 p99).** Every stable policy — all-real included — overshoots corners to ~0.45m at p99 while its mean sits ~0.11m. This is the pure-pursuit corner-overshoot limit (the expert's own behavior, per §the DAgger notes), not an augmentation artifact: soft real corner p99 0.428 ≈ cc 0.45–0.48 ≈ stable-GAN 0.449. Corner precision is bounded by the expert, so no generator can beat it there — the augmentation choice only moves the circle.
+3. **p99 separates instability from precision cleanly.** The unstable mixes (r1.0GAN0.5, gan1.5-triangle, GAN-onpath, even soft's rare star) have tight p90 but p99/max of 1–4m — pure held-out blow-ups, not everyday tracking. Reading means alone conflated these; p90+p99 show r1.0GAN0.5 is actually precise-when-it-works (circle p90 0.027) but occasionally diverges.
+
+**Headline:** on the corner-free precision probe, the smoothness-penalized GAN augmentation delivers **real-quality tracking (circle p99 ~0.025 vs all-real 0.021)** from mostly-synthetic data — 4–6× tighter tails than diffusion — while corner precision is a shared expert-bounded floor no generator moves. The best all-round policy remains **real0.5M+GAN1.0M** (400/400, circle p99 0.027, corners at the structural floor, star 99/100).
