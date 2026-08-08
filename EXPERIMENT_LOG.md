@@ -587,3 +587,18 @@ All downstream policies re-evaluated with pooled per-step |pos_err| percentiles 
 3. **p99 separates instability from precision cleanly.** The unstable mixes (r1.0GAN0.5, gan1.5-triangle, GAN-onpath, even soft's rare star) have tight p90 but p99/max of 1–4m — pure held-out blow-ups, not everyday tracking. Reading means alone conflated these; p90+p99 show r1.0GAN0.5 is actually precise-when-it-works (circle p90 0.027) but occasionally diverges.
 
 **Headline:** on the corner-free precision probe, the smoothness-penalized GAN augmentation delivers **real-quality tracking (circle p99 ~0.025 vs all-real 0.021)** from mostly-synthetic data — 4–6× tighter tails than diffusion — while corner precision is a shared expert-bounded floor no generator moves. The best all-round policy remains **real0.5M+GAN1.0M** (400/400, circle p99 0.027, corners at the structural floor, star 99/100).
+
+### 22 detail — per-shape p99 (pooled per-step |pos_err|, m), all downstream policies
+
+| policy | triangle | square | pentagon | circle | star |
+|---|---|---|---|---|---|
+| soft real1.5M (all real) | 0.427 | 0.436 | 0.421 | **0.021** | 1.329* |
+| real1.0M+cc0.5M | 0.473 | 0.474 | 0.487 | 0.092 | 0.442 |
+| real0.5M+cc1.0M | 0.466 | 0.475 | 0.504 | 0.103 | 0.441 |
+| cc1.5M (pure diffusion) | 0.451 | 0.466 | 0.443 | 0.127 | 0.440 |
+| real1.0M+GAN0.5M | 3.616* | 2.749* | 3.285* | 3.061* | 2.036* |
+| real0.5M+GAN1.0M | 0.447 | 0.459 | 0.440 | **0.027** | 0.448 |
+| GAN1.5M (pure) | 2.360* | 0.458 | 0.437 | **0.025** | 0.424 |
+| GAN 100%-on-path | 3.098* | 3.730* | 3.553* | 2.356* | 0.429 |
+
+(*blow-up-inflated: a few held-out seeds diverged, living in the p99 tail; the p90 beneath is tight. Corner shapes for stable policies cluster at 0.42–0.50 = the shared pure-pursuit corner-overshoot floor; circle is the only column that tracks the generator — soft 0.021 ≈ GAN 0.025–0.027 ≪ diffusion 0.092–0.127. soft's star p99 1.329 is one rare held-out star divergence, not a systematic gap.)
