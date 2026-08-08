@@ -632,3 +632,17 @@ All downstream policies re-evaluated with pooled per-step |pos_err| percentiles 
 | GAN 100%-on-path | 4.521* | 4.371* | 4.101* | 2.728* | 2.495* |
 
 (*single held-out seed's worst moment — max is the noisiest statistic, one bad step in 100 rollouts; use it only for absolute worst-case bounds. Stable policies cap corners at ~0.5m / circle ≤0.2m; every value >1m is a lone divergence. Even all-real has one — soft star max 2.705 = the single rare star blow-up also seen in its star p99 1.329, so a >1m worst-case is not unique to synthetic augmentation.)
+
+### 20c. off-path diversity (minibatch-std) — negative: the tail is a DATA limit, not mode collapse (2026-08-09)
+
+The off-path branch collapses to a tight ~1m cluster (§17/§22). Tested whether a StyleGAN2 **minibatch-std** in D (`--mbstd`, punishes batch non-diversity) can widen it toward real's 0.2–5.7m recovery range. Result — it CANNOT reach the tail:
+
+| off-path ‖pos_err‖ | median | p90 | max |
+|---|---|---|---|
+| baseline (no mbstd) | 1.017 | 1.022 | **1.03** |
+| + minibatch-std | 0.847 | 1.003 | **1.03** |
+| real soft | — | — | 5.66 |
+
+mbstd spread the cluster a little *within* 0.2–1m (median 1.02→0.85, partially filling the mid-range hole) but **max stayed 1.03m — the 3–5m recovery tail is still absent**, and it *destabilized* on-path (best collapsed at step 2000, combined score 0.021 vs the clean λ=10 run's 0.0035 at step 13000). Net negative.
+
+**Conclusion (confirms the scarcity hypothesis):** the soft dataset has only ~3,228 off-path windows (6.8%) and the 3–5m recovery tail is extremely sparse within them, so single-shot diversity regularization can't *manufacture* a range that's barely in the data — it only redistributes density where data already exists. The off-path range limit is a **data** constraint, not an optimization/mode-collapse one. Widening it would need more off-path data (e.g. the original dirty perturbation dataset, off-path 78.8%), not diversity tricks. GAN generator stays the clean λ=10 config (mbstd off). `--mbstd` kept in code as a documented dead-end.

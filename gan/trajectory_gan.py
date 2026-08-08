@@ -105,23 +105,31 @@ class Discriminator(nn.Module):
     """(H, feat) window -> critic score. Conv stack + global average pool, then a linear head plus a
     projection term <embed(c), pooled_features> (Miyato projection discriminator) for conditioning.
     GroupNorm (not BatchNorm) so the WGAN-GP gradient penalty stays well-defined. `sn=True`
-    spectral-normalizes every layer (the alternative Lipschitz control, used with the hinge loss)."""
-    def __init__(self, feat, ch=128, depth=6, dilated=False, n_classes=0, sn=False):
+    spectral-normalizes every layer (the alternative Lipschitz control, used with the hinge loss).
+    `mbstd=True` appends a StyleGAN2 minibatch-std feature so D can see batch diversity and punish
+    a mode-collapsed generator (targets the off-path branch's collapse to a single ~1m cluster)."""
+    def __init__(self, feat, ch=128, depth=6, dilated=False, n_classes=0, sn=False, mbstd=False):
         super().__init__()
         self.n_classes = n_classes
+        self.mbstd = mbstd
         self.inp = _sn(nn.Conv1d(feat, ch, 5, padding=2), sn)
         self.res = ResBlocks(ch, depth, dilated, sn=sn)
-        self.head = _sn(nn.Linear(ch, 1), sn)
+        self.head = _sn(nn.Linear(ch + (1 if mbstd else 0), 1), sn)
         if n_classes > 0:
             self.cproj = _sn(nn.Embedding(n_classes, ch), sn)
 
     def forward(self, x, c=None):
         h = self.inp(x.transpose(1, 2))                           # (B, ch, H)
         h = self.res(h)
-        h = h.mean(dim=2)                                         # global average pool -> (B, ch)
-        out = self.head(h)                                       # (B, 1)
+        hp = h.mean(dim=2)                                        # global average pool -> (B, ch)
+        if self.mbstd:                                            # append batch-diversity scalar (low => collapsed)
+            mb = h.std(dim=0).mean().expand(hp.shape[0], 1)       # std over batch, per (ch,H), averaged
+            hin = torch.cat([hp, mb], dim=1)
+        else:
+            hin = hp
+        out = self.head(hin)                                     # (B, 1)
         if self.n_classes > 0 and c is not None:
-            out = out + (self.cproj(c) * h).sum(dim=1, keepdim=True)
+            out = out + (self.cproj(c) * hp).sum(dim=1, keepdim=True)   # projection on the ch features
         return out
 
 
@@ -156,6 +164,9 @@ def main():
     ap.add_argument('--d-reg', choices=['sn', 'gp'], default='sn',
                     help="discriminator Lipschitz control: 'sn'=spectral norm (cheap, no 2nd-order grad); "
                          "'gp'=WGAN gradient penalty")
+    ap.add_argument('--mbstd', action='store_true',
+                    help='StyleGAN2 minibatch-std in D — punishes generator mode collapse (widens the '
+                         'collapsed off-path branch toward the real recovery range)')
     ap.add_argument('--n-critic', type=int, default=1, help='D updates per outer step (SN-hinge: 1; WGAN-GP: ~5)')
     ap.add_argument('--g-steps', type=int, default=1,
                     help='G updates per outer step; >1 gives the generator more updates than D when D over-powers G')
@@ -260,9 +271,9 @@ def main():
     n_cls = N_CLASSES if A.class_cond else 0
     use_sn = (A.d_reg == 'sn')
     G = Generator(FD, H, A.latent_dim, ch=A.ch, depth=A.depth, dilated=A.dilated, n_classes=n_cls).to(dev)
-    D = Discriminator(FD, ch=A.ch, depth=A.depth, dilated=A.dilated, n_classes=n_cls, sn=use_sn).to(dev)
+    D = Discriminator(FD, ch=A.ch, depth=A.depth, dilated=A.dilated, n_classes=n_cls, sn=use_sn, mbstd=A.mbstd).to(dev)
     npar = lambda m: sum(p.numel() for p in m.parameters()) / 1e6
-    reg = 'spectral-norm' if use_sn else f'wgan-gp(gp={A.gp_weight})'
+    reg = ('spectral-norm' if use_sn else f'wgan-gp(gp={A.gp_weight})') + (' +mbstd' if A.mbstd else '')
     print(f"[model] G={npar(G):.2f}M D={npar(D):.2f}M ch={A.ch} depth={A.depth} latent={A.latent_dim} "
           f"class_cond={A.class_cond} batch={A.batch} loss={A.loss} r1={A.r1_gamma} r2={A.r2_gamma} "
           f"d_reg={reg} lr={A.lr_g:g}->{A.lr_g*A.lr_min_frac:g} n_critic={A.n_critic} g_steps={A.g_steps}")
