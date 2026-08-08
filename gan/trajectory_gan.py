@@ -156,9 +156,6 @@ def main():
     ap.add_argument('--d-reg', choices=['sn', 'gp'], default='sn',
                     help="discriminator Lipschitz control: 'sn'=spectral norm (cheap, no 2nd-order grad); "
                          "'gp'=WGAN gradient penalty")
-    ap.add_argument('--mbstd', action='store_true',
-                    help='StyleGAN2 minibatch-std in D — punishes generator mode collapse (widens the '
-                         'collapsed off-path branch toward the real recovery range)')
     ap.add_argument('--n-critic', type=int, default=1, help='D updates per outer step (SN-hinge: 1; WGAN-GP: ~5)')
     ap.add_argument('--g-steps', type=int, default=1,
                     help='G updates per outer step; >1 gives the generator more updates than D when D over-powers G')
@@ -263,9 +260,9 @@ def main():
     n_cls = N_CLASSES if A.class_cond else 0
     use_sn = (A.d_reg == 'sn')
     G = Generator(FD, H, A.latent_dim, ch=A.ch, depth=A.depth, dilated=A.dilated, n_classes=n_cls).to(dev)
-    D = Discriminator(FD, ch=A.ch, depth=A.depth, dilated=A.dilated, n_classes=n_cls, sn=use_sn, mbstd=A.mbstd).to(dev)
+    D = Discriminator(FD, ch=A.ch, depth=A.depth, dilated=A.dilated, n_classes=n_cls, sn=use_sn).to(dev)
     npar = lambda m: sum(p.numel() for p in m.parameters()) / 1e6
-    reg = ('spectral-norm' if use_sn else f'wgan-gp(gp={A.gp_weight})') + (' +mbstd' if A.mbstd else '')
+    reg = 'spectral-norm' if use_sn else f'wgan-gp(gp={A.gp_weight})'
     print(f"[model] G={npar(G):.2f}M D={npar(D):.2f}M ch={A.ch} depth={A.depth} latent={A.latent_dim} "
           f"class_cond={A.class_cond} batch={A.batch} loss={A.loss} r1={A.r1_gamma} r2={A.r2_gamma} "
           f"d_reg={reg} lr={A.lr_g:g}->{A.lr_g*A.lr_min_frac:g} n_critic={A.n_critic} g_steps={A.g_steps}")
