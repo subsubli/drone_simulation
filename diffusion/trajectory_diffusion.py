@@ -108,6 +108,11 @@ def main():
     ap.add_argument('--lr-min', type=float, default=1e-5)
     ap.add_argument('--lambda-cons', type=float, default=0.1,
                     help='weight of the pos_err<->vel physical-consistency loss (0 disables)')
+    ap.add_argument('--min-snr-gamma', type=float, default=0.0,
+                    help='min-SNR-gamma loss weighting (Hang 2023): weight eps-MSE by min(SNR,g)/SNR; 0=uniform')
+    ap.add_argument('--lambda-x0pe', type=float, default=0.0,
+                    help='direct x0 pos_err reconstruction penalty (physical m), confidence-weighted by abar; '
+                         'targets the loose precise-tracking bulk directly (diffusion analog of the GAN smooth term)')
     ap.add_argument('--act-cap', type=float, default=0.0,
                     help='cap generated |action| at this m/s; <=0 uses the real data max')
     ap.add_argument('--pe-asinh', type=float, default=0.0,
@@ -245,25 +250,36 @@ def main():
                 clab = clab.clone()
                 clab[torch.rand(A.batch, device=dev) < A.cond_dropout] = CLS_NULL
         eps_pred = model(xt, t, clab)
-        loss_diff = ((eps_pred - noise) ** 2).mean()
-        #### physical pos_err<->vel consistency on the PREDICTED x0 (denormalized).
-        #### pos_err = target - pos  =>  d(pos_err)/dt = v_target - vel  =>  v_target = d(pos_err)/dt + vel.
-        #### the path (target) is smooth, so penalize v_target's step-to-step change (target accel).
-        #### jitter in pos_err makes d(pos_err)/dt explode -> this term forces pos_err & vel to agree.
+        #### min-SNR-gamma reweights the per-sample eps-MSE by min(SNR,g)/SNR (Hang 2023); 0=uniform.
+        if A.min_snr_gamma > 0:
+            snr = abar[t] / (1 - abar[t])                            # (B,)
+            wsnr = torch.clamp(snr, max=A.min_snr_gamma) / snr       # (B,)
+            loss_diff = (wsnr * ((eps_pred - noise) ** 2).mean(dim=(1, 2))).mean()
+        else:
+            loss_diff = ((eps_pred - noise) ** 2).mean()
+        #### physical pos_err<->vel consistency AND/OR a direct pos_err reconstruction penalty, both on the
+        #### predicted x0 (needs x0_pred; compute once if either term is on).
         loss_cons = torch.tensor(0.0, device=dev)
-        if A.lambda_cons > 0:
+        loss_x0pe = torch.tensor(0.0, device=dev)
+        if A.lambda_cons > 0 or A.lambda_x0pe > 0:
             x0_pred = (xt - (1 - ab).sqrt() * eps_pred) / ab.sqrt()   # DDPM x0 estimate (normalized)
             x0_pred = x0_pred.clamp(-3.0, 3.0)                        # bound before denorm/sinh (avoids inf at high t)
-            phys = x0_pred * std_t + mean_t                           # de-normalize (pe still asinh-space)
-            pe, vel = phys[..., PE], phys[..., VEL]                   # (B,H,3) each
-            if c > 0:
-                pe = c * torch.sinh(pe)                               # invert asinh -> physical meters
-            #### everything in per-step METERS: target displacement d_tgt = Δpos_err + vel·dt
-            d_tgt = (pe[:, 1:] - pe[:, :-1]) + vel[:, :-1] * dt       # (B,H-1,3)
-            acc_tgt = d_tgt[:, 1:] - d_tgt[:, :-1]                    # target accel (2nd diff) (B,H-2,3)
-            cons_per = (acc_tgt ** 2).mean(dim=(1, 2))               # (B,)
-            loss_cons = (abar[t] * cons_per).mean()                  # weight by x0 confidence (low noise)
-        loss = loss_diff + A.lambda_cons * loss_cons
+            if A.lambda_cons > 0:
+                #### pos_err = target - pos => d(pos_err)/dt = v_target - vel; path is smooth, so penalize
+                #### v_target's step-to-step change (target accel). Forces pos_err & vel to agree.
+                phys = x0_pred * std_t + mean_t                      # de-normalize (pe still asinh-space)
+                pe, vel = phys[..., PE], phys[..., VEL]
+                if c > 0:
+                    pe = c * torch.sinh(pe)                          # invert asinh -> physical meters
+                d_tgt = (pe[:, 1:] - pe[:, :-1]) + vel[:, :-1] * dt
+                acc_tgt = d_tgt[:, 1:] - d_tgt[:, :-1]
+                loss_cons = (abar[t] * (acc_tgt ** 2).mean(dim=(1, 2))).mean()
+            if A.lambda_x0pe > 0:
+                #### direct pos_err reconstruction (normalized asinh-zscore space), confidence-weighted by
+                #### abar so it bites at LOW noise where the fine bulk detail is resolved -> tightens the bulk.
+                x0pe_per = ((x0_pred[..., PE] - x0[..., PE]) ** 2).mean(dim=(1, 2))   # (B,)
+                loss_x0pe = (abar[t] * x0pe_per).mean()
+        loss = loss_diff + A.lambda_cons * loss_cons + A.lambda_x0pe * loss_x0pe
         opt.zero_grad(); loss.backward(); opt.step()
         with torch.no_grad():                                  # update EMA shadow
             for k, v in model.state_dict().items():
