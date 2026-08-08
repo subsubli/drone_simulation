@@ -617,3 +617,18 @@ All downstream policies re-evaluated with pooled per-step |pos_err| percentiles 
 | GAN 100%-on-path | 1.762 | 2.296 | 0.460 | 0.013 | 0.350 |
 
 **p90 vs p99 is the instability discriminator.** For the p99-blow-up policies, p90 shows whether the failure is *typical-case* or *rare-tail*: real1.0M+GAN0.5M has tight p90 everywhere (circle 0.027, triangle 0.416 = normal) — it tracks precisely and only *occasionally* diverges (blow-ups confined to p99). GAN 100%-on-path is the opposite — triangle/square p90 are already **1.76 / 2.30m**, so those shapes are *broadly* degraded (the typical rollout is bad, not just the tail), confirming §21c's read that zero-recovery data leaves corner tracking fundamentally unstable rather than merely blow-up-prone. Circle p90 confirms the precision ranking cleanly (no corner tail to muddy it): soft 0.012 ≈ GAN 0.013–0.027 ≪ diffusion cc 0.041–0.076.
+
+### 22 detail — per-shape pooled max (worst single-step |pos_err|, m), all downstream policies
+
+| policy | triangle | square | pentagon | circle | star |
+|---|---|---|---|---|---|
+| soft real1.5M (all real) | 0.483 | 0.500 | 0.495 | 0.057 | 2.705* |
+| real1.0M+cc0.5M | 0.563 | 0.580 | 3.355* | 0.151 | 0.552 |
+| real0.5M+cc1.0M | 0.534 | 0.554 | 1.100* | 0.148 | 0.532 |
+| cc1.5M (pure diffusion) | 0.527 | 0.563 | 0.552 | 0.194 | 0.534 |
+| real1.0M+GAN0.5M | 4.254* | 3.110* | 3.548* | 3.203* | 2.774* |
+| real0.5M+GAN1.0M | 0.508 | 0.539 | 0.526 | 0.062 | 1.492* |
+| GAN1.5M (pure) | 2.628* | 2.973* | 0.482 | 0.043 | 0.497 |
+| GAN 100%-on-path | 4.521* | 4.371* | 4.101* | 2.728* | 2.495* |
+
+(*single held-out seed's worst moment — max is the noisiest statistic, one bad step in 100 rollouts; use it only for absolute worst-case bounds. Stable policies cap corners at ~0.5m / circle ≤0.2m; every value >1m is a lone divergence. Even all-real has one — soft star max 2.705 = the single rare star blow-up also seen in its star p99 1.329, so a >1m worst-case is not unique to synthetic augmentation.)
