@@ -661,3 +661,21 @@ mbstd spread the cluster a little *within* 0.2–1m (median 1.02→0.85, partial
 | real soft | 0.006 | — | 3.88 | 5.66 | 6.82% | 0.00135 |
 
 **x0pe tightens the diffusion bulk 16mm → 12mm (~26%) for free — smoothness (pe_jerk 0.0021) and the perfect 0% class separation preserved — but does NOT reach the GAN's 3mm.** The residual ~12mm floor is the eps-MSE mode-averaging limit: the direct penalty softens it but can't eliminate it, whereas the GAN's adversarial objective has no such averaging and hits 3mm. So the honest picture: (1) **my initial min-SNR suggestion was wrong** for this goal — it trades bulk for roughness; (2) the direct x0-pe penalty is the right lever and a genuine modest win, so the *stable* diffusion generator can be made ~25% more precise at zero cost; (3) but ultra-tight bulk (3mm, sub-real) stays a GAN-only capability — adversarial beats denoising-MSE on the finest precise-tracking detail, matching §20b's mechanism. Improved generator kept at `diffusion/gen_traj_cc_x0pe/model.pt`.
+
+### 23b. x0pe diffusion DOWNSTREAM — the data-level gain does NOT reach the policy (2026-08-09)
+
+Ran the §18/§21 downstream protocol on the x0pe-improved diffusion generator (12mm data vs baseline cc 16mm): 24k pool → 3 mixes → init+DAgger×2 → 50-seed+star eval (+ init-only §19-style). Question: does the §23 data tightening carry to the policy?
+
+**FINAL (DAgger×2), circle = pure-precision probe, vs §18/§22 baseline diffusion cc:**
+
+| mix | x0pe trav | x0pe circle mean / p99 | cc trav | cc circle mean / p99 |
+|---|---|---|---|---|
+| real1.0M+X0.5M | 400/400 | 0.019 / 0.077 | 399/400 | 0.021 / 0.092 |
+| real0.5M+X1.0M | 399/400 | 0.030 / 0.087 | 399/400 | 0.032 / 0.103 |
+| X1.5M (pure) | 400/400 | **0.049 / 0.153** | 400/400 | **0.040 / 0.127** |
+
+**The 16mm→12mm data gain does NOT produce a meaningful policy gain.** Circle precision is within noise of baseline cc (±0.01) for the real-containing mixes, and **pure x0pe is actually worse (0.049 vs 0.040)**. Completion is comparable (marginally better: 400/400 & 400/400 vs cc's 399/400, within noise). So a modest generator-data improvement washes out in the DAgger + closed-loop pipeline — a 4mm data difference doesn't survive covariate-shift correction and closed-loop compounding. Contrast the GAN (§21): only its *large* data gap (16mm→3mm) moved the policy (circle 0.008); this ~25% gain didn't. **Lesson: generator-data precision only helps downstream past a large threshold; incremental data tightening is not worth the downstream cost.**
+
+**INITIAL-only (no DAgger):** all three 0/80 LOST, divergence mean ~4–10m, max 40–58m — the same coverage-hole behavior as §19 cc (~21m) and §21b GAN. x0pe's clean data (0% on-path leak, off-path a tight ~1m cluster) leaves the same recovery void, so a DAgger-less init diverges hard. Nothing new mechanistically — confirms the clean-data → pre-DAgger-divergence rule holds for x0pe too (real<diffusion<cc≈x0pe<GAN on divergence severity).
+
+**Net verdict on x0pe:** a genuine *data-level* win (§23, stable diffusion 16→12mm) that is **not a policy-level win** (§23b). Keep x0pe as a documented option; the baseline diffusion cc and the GAN λ=10 remain the reference generators. Init policies `runs/merged/…_gomu/_pryh/_yuee`, finals `…_zlzb/_kwrf/_vbpe`.
