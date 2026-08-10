@@ -722,3 +722,34 @@ Peak tilt ~13°, RMS 6–9°, **zero flips** — matches the known ±~11° veloc
 - **Frequency resolution Δf ≈ 0.025–0.034 Hz.** So the low-freq dominant peaks (0.1–0.32Hz) sit on only ~3–13 bins — the exact peak frequency is **coarsely resolved and should not be read as precise**. The 1Hz band of interest, by contrast, is well resolved (~30th bin, the 0.8–1.2Hz window spans ~12 bins), so the **"is there a sustained 1Hz ring?" verdict is valid** at this record length; only the sub-Hz peak *location* is fuzzy.
 - **Spectrum is non-stationary.** The whole trajectory (straights + corner accel/decel + laps) is FFT'd together, so corner kicks and maneuvering all mix in — this is *why* the dominant peak reads as a "maneuvering frequency" rather than a clean attitude mode. It bounds ringing (no sustained high-Q peak appears) but is not a pure attitude-loop spectrum.
 - **To sharpen if ever needed:** run a longer rollout (e.g. 10 laps ~100s) to ~3× the resolution, or window only straight-segment steady flight to isolate the pure attitude spectrum. Not done here — the current length already answers the sustained-ring question; deferred unless a finer attitude characterization is required.
+
+## 25. Ringing measured on the SOFT SOURCE DATA (not policy) — same signature, plus a 9.2% crash discovery (2026-08-10)
+
+§24 measured *policy rollouts*. Here we FFT the **raw collected soft episodes** directly (`data_soft/shape_dataset/*seed*.csv`, 423 episodes, each a continuous 3-lap expert pure-pursuit rollout at att_d_gain_scale=0.3, 100Hz — same collection settings as eval). Same tilt (body-z vs world-z) + roll/pitch FFT as §24. Read straight from CSV (no sim), so no stale-CSV risk.
+
+**Ringing on healthy episodes (crashed ones excluded, see below), per-shape medians:**
+
+| shape | n (healthy) | tilt max (deg) | tilt RMS (deg) | dominant peak (Hz) | 0.8-1.2Hz band | 1Hz band p90 |
+|---|---|---|---|---|---|---|
+| circle | 94 | 11.0 | 5.4 | 0.10 | 0.0% | 0.0% |
+| triangle | 95 | 11.1 | 6.7 | 0.17 | 12.0% | 15.1% |
+| square | 101 | 11.1 | 6.7 | 0.24 | 12.4% | 17.9% |
+| pentagon | 94 | 11.1 | 6.8 | 0.29 | 13.8% | 18.4% |
+
+**Verdict — the source data has the same signature as the policy (§24): no sustained ring.** Dominant peak = maneuvering frequency (0.10–0.29Hz, scales with corner rate); the ~1Hz attitude mode is only a **corner-excited transient** (12–14% of mean-removed roll/pitch power on cornered shapes, **0% on the smooth circle**). So the policy did not *introduce* ringing — it faithfully inherited the expert's corner-kicked-but-decaying attitude. att_d_gain_scale=0.3 already suppressed the sustained ±11° 1Hz limit cycle that exists at default gains, in the DATA itself.
+
+**Discovery — 9.2% of soft episodes are real crashes, not ringing.** Scanning all 423 for tilt>90° (yaw-invariant, so a true inversion, not a euler artifact):
+
+| metric | value |
+|---|---|
+| episodes inverted >1% of steps | 39 / 423 (9.2%) |
+| per shape (circle/triangle/square/pentagon) | 11 / 11 / 5 / 12 |
+| crash onset (fraction into episode), median | 0.24 (p10–p90 = 0.19–0.29) |
+| onset in first 10% of episode | 0 / 39 |
+| frozen-inverted tail (vel≈0, upside-down, last 20%) | 25 / 39 |
+
+Raw check of a crashed episode (circle-seed7): normal until ~step 500 (tilt <10°, |pos_err| <0.02m, |vel|~1.3), then by step 1500 it is **tilt 180°, |pos_err| 3.99m, |vel| 0.00** and stays frozen inverted ~4m off-path to the end (reward ≈ −4). A genuine collection crash, not a logging artifact.
+
+**Cause = the perturbation kicks.** Collection used `--perturb_prob 0.1` (10% of episodes get 2 kicks). The kick schedule (shape_dataset.py:595) places the first kick at 0.2 into the episode — and crash onsets cluster exactly at 0.24. So a ~0.3m position kick occasionally destabilizes the velocity-only controller enough to tumble the drone, which then can't recover and freezes inverted. The 9.2% flip rate ≈ the 10% perturb rate.
+
+**Why it matters:** (1) part of the soft set's "off-path" data is **not usable recovery** — it's frozen-crashed tails (drone stuck at 4m, velocity 0), which connects to the off-path scarcity/quality story in §20c and the coverage-hole in §16/§19 (some off-path windows teach "sit still, inverted, far away," the opposite of recovery). (2) The reference soft policy trains *through* this 9% contamination and still works — the path-relative state + windowing + the 90.8% clean majority dominate. (3) Cleaning these 39 crashed tails (or gating kicks to not exceed the controller's recovery envelope) is a concrete, untested data-quality lever if recovery coverage is ever revisited.
