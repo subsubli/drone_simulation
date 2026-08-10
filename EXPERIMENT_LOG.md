@@ -679,3 +679,31 @@ Ran the §18/§21 downstream protocol on the x0pe-improved diffusion generator (
 **INITIAL-only (no DAgger):** all three 0/80 LOST, divergence mean ~4–10m, max 40–58m — the same coverage-hole behavior as §19 cc (~21m) and §21b GAN. x0pe's clean data (0% on-path leak, off-path a tight ~1m cluster) leaves the same recovery void, so a DAgger-less init diverges hard. Nothing new mechanistically — confirms the clean-data → pre-DAgger-divergence rule holds for x0pe too (real<diffusion<cc≈x0pe<GAN on divergence severity).
 
 **Net verdict on x0pe:** a genuine *data-level* win (§23, stable diffusion 16→12mm) that is **not a policy-level win** (§23b). Keep x0pe as a documented option; the baseline diffusion cc and the GAN λ=10 remain the reference generators. Init policies `runs/merged/…_gomu/_pryh/_yuee`, finals `…_zlzb/_kwrf/_vbpe`.
+
+## 24. Attitude sanity-check — soft (all-real) policy roll/pitch is healthy, no sustained ringing (2026-08-10)
+
+Checked whether the reference soft (all-real) policy `runs_soft_all2/merged/…_uhsf` emits sane attitude under rollout (att_d_gain_scale=0.3, 100Hz control, both dirs). Measured **tilt** = angle between body-z and world-z (yaw-invariant, avoids euler gimbal artifacts), and FFT'd roll/pitch for ringing.
+
+**Tilt (per rollout, one sd.run per fresh process):**
+
+| shape | tilt |max| | tilt RMS | >90° (flipped) | pos_err max |
+|---|---|---|---|---|
+| circle | 11.6° | 5.4° | 0 | 0.02m |
+| triangle | 12.6° | 7.9° | 0 | 0.42m |
+| pentagon | 12.5° | 8.9° | 0 | 0.43m |
+| square | 12.9° | 8.2° | 0 | 0.42m |
+
+Peak tilt ~13°, RMS 6–9°, **zero flips** — matches the known ±~11° velocity-only oscillation (shape_dataset.py:553), already damped by att_d_gain_scale=0.3. Healthy for a real ~2kg drone.
+
+**FFT (roll/pitch power spectrum, Hanning, DC removed):**
+
+| shape | dominant peak | peak Q | 0.8–1.2Hz band power |
+|---|---|---|---|
+| circle | 0.10Hz | 1.5 | 0.4–0.8% |
+| triangle | 0.15Hz | 1.7 | 11–16% |
+| square | 0.24Hz | 4.5 | 13–14% |
+| pentagon | 0.32Hz | 4.3 | 10–11% |
+
+**No sustained ringing / limit cycle.** The dominant spectral peak is the *maneuvering* frequency (0.1–0.32Hz, scales with corner-passing rate), low-Q (1.5–4.5 = broadband, not a sharp resonance). The ~1Hz attitude mode the comments warn about (the ±11° limit cycle at DEFAULT gains) is **suppressed** by att_d_gain_scale=0.3 — it survives only as a **corner-excited transient**: ~10–16% of (mean-removed) roll/pitch power on cornered shapes, but **<1% on the smooth circle**. So it is not self-sustaining; corners kick a residual 1Hz mode that decays, amplitude bounded (roll RMS 5–6°). 
+
+**Gotcha logged:** running many `sd.run` in ONE process and picking the latest CSV by mtime can read a stale/mismatched file → phantom "180° flip" readings. Diagnose attitude with **one rollout per process**. eval_aug is unaffected (fresh `DSLPIDControl` per rollout so D_COEFF_TOR never compounds; aggregate laps/dist are sane), i.e. no existing eval numbers are corrupted.
