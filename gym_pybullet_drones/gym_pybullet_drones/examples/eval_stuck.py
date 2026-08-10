@@ -19,7 +19,7 @@ def wrapped(d):
     return np.where(d < -N_IDX / 2, d + N_IDX, np.where(d > N_IDX / 2, d - N_IDX, d))
 
 
-def rollout(shape, seed, cw, policy, mean, std, include_la, out):
+def rollout(shape, seed, cw, policy, mean, std, include_la, out, att_d=0.3):
     fn = make_policy_fn(policy, mean, std, slew_max_accel=2.0, include_lookahead=include_la)
     rec = []
     orig = sd.PurePursuitTracker.step
@@ -27,7 +27,7 @@ def rollout(shape, seed, cw, policy, mean, std, include_la, out):
         tv, ci = _o(self, cur_pos); _r.append(ci); return tv, ci
     sd.PurePursuitTracker.step = patched
     try:
-        sd.run(shape=shape, seed=seed, gui=False, policy_fn=fn, att_d_gain_scale=0.3,
+        sd.run(shape=shape, seed=seed, gui=False, policy_fn=fn, att_d_gain_scale=att_d,
                output_folder=out, clockwise=cw)
     finally:
         sd.PurePursuitTracker.step = orig
@@ -60,6 +60,7 @@ def main():
     ap.add_argument('--shapes', nargs='+', default=['triangle', 'square', 'pentagon', 'circle'])
     ap.add_argument('--seeds', type=int, nargs='+', default=[500, 501, 502])
     ap.add_argument('--label', default=None)
+    ap.add_argument('--att-d-gain-scale', type=float, default=0.3)
     A = ap.parse_args()
     cfg = json.load(open(os.path.join(A.run_dir, 'config.json')))
     include_la = bool(cfg.get('include_lookahead'))
@@ -70,7 +71,7 @@ def main():
     print(f"# {A.label or os.path.basename(A.run_dir.rstrip('/'))}  seeds {A.seeds}  (both dirs)")
     print(f"{'shape':10} {'laps':>5} {'cov':>5} {'lastQ_adv':>10} {'dist':>6}   verdict (majority)")
     for shape in A.shapes:
-        rows = [rollout(shape, s, cw, policy, mean, std, include_la, out)
+        rows = [rollout(shape, s, cw, policy, mean, std, include_la, out, A.att_d_gain_scale)
                 for s in A.seeds for cw in (False, True)]
         r = np.array(rows)
         vs = [verdict(*x) for x in rows]

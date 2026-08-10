@@ -783,3 +783,35 @@ The expert label is a **pristine, always-bounded, correctly-directed recovery co
 Combined with: (a) catastrophic states are **off the deployment distribution** — a well-tracking policy at test never reaches 17m/inverted, so its behavior there is irrelevant to the metric; (b) **reward-clip** (winning recipe) caps the −4…−17 outlier rewards so the value function isn't dominated by them; (c) path-relative state + the dense near-path majority soak up the function-approximation capacity.
 
 **This reframes §25's soft crashes.** Those 9.2% frozen tails also carry *correct* pure-pursuit labels (bounded return command) — they don't teach a *wrong* action. Their only cost is wasting samples on **inert/redundant transitions** (frozen: next_state≈state, no recovery actually demonstrated) and filling off-distribution corners — not poisoning the policy. Same lens as the memory note [logged action must causally explain the state transition]: `dagger_relabel` **deliberately** breaks causal consistency (logged action ≠ what moved the drone), which is fine for BC/AWR-style policy extraction (label = imitation target) but would be wrong for pure dynamics/Q-learning off these transitions. **Net: the "crashes" in both soft and DAgger data are largely benign because the labels are expert-clean; the real, already-known bottleneck remains off-path coverage/quality (§20c), not label contamination.**
+
+## 27. Root cause of the crashes = the lowered attitude D-gain; soft v2 (D=1.0) recovers kicks & completes 500/500 (2026-08-11)
+
+§24-26 traced the no-recovery behavior to a loss-of-control. This nails the cause and fixes it. **Pure pursuit's command was never wrong** — frame-by-frame at a soft crash (circle-seed7, onset step 775), the logged action stays a correct, bounded ~1.3 m/s toward the path throughout, while the *actual* velocity diverges downward (vz −1.4 → −4.3) as tilt marches 44°→90°→105° (inverted) with angvel 5–9 rad/s. Mechanism: velocity-only mode tilts to chase a velocity error; **att_d_gain_scale=0.3** (lowered to damp the ±11° cruise oscillation, §24) is underdamped for a large transient → tilt overshoots past 90° → thrust vector points down → the correct command is now physically unexecutable (underactuated) → tumble, freeze.
+
+**Controller gain sweep (pure-pursuit driven, one rollout per fresh process), kick recovery vs cruise cost:**
+
+| condition | D=0.3 | D=1.0 (default) | D=2.0 |
+|---|---|---|---|
+| kick 0.3m (seeds 500–503) | flips every time, 0.9–3.6m stuck | recovers every time, final 0.00–0.05m | recovers |
+| hard kick 1.5m | flips, 15m, 8.2m stuck | recovers (1.1m→0.10m) | recovers (0.20) |
+| cruise circle | med 0.005 | med 0.005 (same) | med 0.012 |
+| cruise corners | med 0.01, 1Hz 9–16% | med 0.02, 1Hz 17–27% | worse |
+
+**att_d_gain_scale=0.3 is the direct cause of the kick crashes; D=1.0 recovers every kick (even 1.5m), at a cost of ~2× cruise pos_err on corners.** It is a genuine gain trade-off (cruise smoothness ⟷ disturbance-recovery authority) that a single scalar can't win on both ends; the real fixes are gain scheduling / attitude saturation, or supplying recovery via DAgger labels (what the project already does).
+
+**Soft v2 = re-collect the whole soft dataset at D=1.0, retrain, compare.** Identical recipe & **identical seeds** as v1 (deterministic `seed=seed_start+episode_idx`, verified circle seeds match exactly), only att_d_gain_scale 0.3→1.0, so paths/kicks are identical and only the controller differs. 1.5M steps (1,502,262 rows). Everything — collection, DAgger×2, eval — at D=1.0 (added `--att-d-gain-scale` to eval_aug/eval_stuck, default 0.3 kept). Init 300k + DAgger×2, then §21/§21c-format eval.
+
+**FINAL (DAgger×2, 50-seed 500–549 × both dirs + untrained star), v2 (D=1.0) vs v1 all-real soft ref (D=0.3, §21):**
+
+| shape | v1 trav / dist | v2 trav / dist | v2 p99 / max |
+|---|---|---|---|
+| triangle | 100/100 / 0.104 | 100/100 / 0.110 | 0.431 / 0.488 |
+| square | 100/100 / 0.116 | 100/100 / 0.124 | 0.443 / 0.507 |
+| pentagon | 100/100 / 0.109 | 100/100 / 0.117 | 0.421 / 0.494 |
+| circle | 100/100 / **0.007** | 100/100 / **0.016** | 0.065 / 0.141 |
+| star (untrained) | **98/100** / 0.165 | **100/100** / 0.148 | 0.433 / 0.518 |
+| TOTAL (incl. star) | 498/500 | **500/500** | tight, zero blow-ups |
+
+**INIT-only (no DAgger, D=1.0):** 5/80 traverse (circle 5/20, one COMPLETES; tri/sq/pent 0/20), dist 3–12m, LOST. Worse than v1's §16 init (24/80, <1m) — but confounded: v1 init was eval'd at the sluggish D=0.3 (drifts slowly, stays <1m), v2 at the responsive D=1.0 (faithfully executes the *untrained* init policy's bad commands → diverges further). Consistent with the gain finding: D=1.0 recovers *correct* (pure-pursuit) commands but amplifies *wrong* (raw-init-policy) ones. DAgger then washes this out.
+
+**Verdict:** v2 trades a modest cruise-precision loss (circle 7→16mm, corners ~5%) for **equal-or-better completion (star 98→100/100, 500/500 total), clean tails (no blow-ups), and — the real prize — a controller that physically recovers from disturbances.** The sim completion was already saturated; v2's value is **deployability**: it directly addresses the memory's open real-hardware prereq (attitude-gain retune for velocity-only mode). Runs: init `runs/merged/…_hgbf`, d1 `runs/d1_merged/…_rykf`, FINAL `runs/d2_merged/08-11-26_01.01.10_vxno`.

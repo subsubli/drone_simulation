@@ -1,0 +1,14 @@
+# mix folder -> final policy run dir (snapshot before CSV cleanup 2026-08-11 00:54)
+mix_cc1.5: /Users/hanjakp/drone_simulation/IQL-PyTorch-main/runs/d2_merged/08-07-26_03.42.15_dmcu
+mix_gan1.5: /Users/hanjakp/drone_simulation/IQL-PyTorch-main/runs/d2_merged/08-08-26_04.13.59_ejct
+mix_gan1.5_onpath: /Users/hanjakp/drone_simulation/IQL-PyTorch-main/runs/d2_merged/08-08-26_06.19.43_cusj
+mix_r0.0_d1.5: /Users/hanjakp/drone_simulation/IQL-PyTorch-main/runs/d2_merged/08-06-26_20.14.12_wyxg
+mix_r0.5_cc1.0: /Users/hanjakp/drone_simulation/IQL-PyTorch-main/runs/d2_merged/08-07-26_03.42.41_mkki
+mix_r0.5_d1.0: /Users/hanjakp/drone_simulation/IQL-PyTorch-main/runs/d2_merged/08-06-26_20.13.57_sqew
+mix_r0.5_gan1.0: /Users/hanjakp/drone_simulation/IQL-PyTorch-main/runs/d2_merged/08-08-26_04.14.03_jsoo
+mix_r0.5_x0pe1.0: /Users/hanjakp/drone_simulation/IQL-PyTorch-main/runs/d2_merged/08-09-26_07.55.12_kwrf
+mix_r1.0_cc0.5: /Users/hanjakp/drone_simulation/IQL-PyTorch-main/runs/d2_merged/08-07-26_05.07.55_soiu
+mix_r1.0_d0.5: /Users/hanjakp/drone_simulation/IQL-PyTorch-main/runs/d2_merged/08-06-26_20.13.18_fbsp
+mix_r1.0_gan0.5: /Users/hanjakp/drone_simulation/IQL-PyTorch-main/runs/d2_merged/08-08-26_04.13.32_wrrm
+mix_r1.0_x0pe0.5: /Users/hanjakp/drone_simulation/IQL-PyTorch-main/runs/d2_merged/08-09-26_07.55.21_vbpe
+mix_x0pe1.5: /Users/hanjakp/drone_simulation/IQL-PyTorch-main/runs/d2_merged/08-09-26_07.55.29_zlzb
