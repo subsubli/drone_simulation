@@ -752,4 +752,34 @@ Raw check of a crashed episode (circle-seed7): normal until ~step 500 (tilt <10�
 
 **Cause = the perturbation kicks.** Collection used `--perturb_prob 0.1` (10% of episodes get 2 kicks). The kick schedule (shape_dataset.py:595) places the first kick at 0.2 into the episode — and crash onsets cluster exactly at 0.24. So a ~0.3m position kick occasionally destabilizes the velocity-only controller enough to tumble the drone, which then can't recover and freezes inverted. The 9.2% flip rate ≈ the 10% perturb rate.
 
-**Why it matters:** (1) part of the soft set's "off-path" data is **not usable recovery** — it's frozen-crashed tails (drone stuck at 4m, velocity 0), which connects to the off-path scarcity/quality story in §20c and the coverage-hole in §16/§19 (some off-path windows teach "sit still, inverted, far away," the opposite of recovery). (2) The reference soft policy trains *through* this 9% contamination and still works — the path-relative state + windowing + the 90.8% clean majority dominate. (3) Cleaning these 39 crashed tails (or gating kicks to not exceed the controller's recovery envelope) is a concrete, untested data-quality lever if recovery coverage is ever revisited.
+**Why it matters:** (1) part of the soft set's "off-path" data is **frozen-crashed tails** (drone stuck at 4m, velocity 0), connecting to the off-path scarcity/quality story in §20c and the coverage-hole in §16/§19. (2) The reference soft policy trains *through* this 9% and still works. (3) Cleaning these 39 tails (or gating kicks to the controller's recovery envelope) is a concrete, untested data-quality lever if recovery coverage is revisited. **NOTE: §26 refines this — the crashes are much less harmful than "contamination" implies, because the logged action labels stay expert-correct. Read §26 before acting on point (3).**
+
+## 26. Do the DAgger data have the same crashes, and why does the policy still work? (2026-08-10)
+
+Follow-up to §25. Scanned the actual DAgger rollout data (`mix_*/dagger1|2/shape_dataset`) for the same flip/crash pattern, and traced how the policy tolerates it.
+
+**DAgger data is FAR more "crashed" than soft — by design:**
+
+| dataset | flipped episodes | pos_err max (median) | kick setting |
+|---|---|---|---|
+| soft (source, §25) | 9.2% | 0.10m | perturb_prob 0.1, ×2, 0.3m |
+| DAgger dagger1 | 98.8% | 17.6m | perturb_prob 1.0, ×8, 1.5m |
+| DAgger dagger2 | 100% | 18.3m | perturb_prob 1.0, ×8, 1.5m |
+
+DAgger collection (run_aug_pipeline.sh) uses `--perturb_prob 1.0 --perturb_count 8 --perturb_magnitude 1.5` AND flies the *imperfect learner* policy (`dagger_relabel=True`), so nearly every episode is thrown far off-path and tumbles. Crash onset again clusters at ~0.24 (first-kick timing). This is not a defect — visiting off-path states is the entire point of DAgger.
+
+**Why the policy still works — state vs. label separation (verified, not just argued):**
+
+The drone's wrecked physical state only decides *which states get logged*; it does **not** corrupt the action labels. In `dagger_relabel` mode the LOGGED action is `tracker.last_raw_target_vel` = pure-pursuit's expert answer (shape_dataset.py:655), NOT the learner's executed velocity. Measured over 177,720 steps of flip-heavy DAgger episodes:
+
+| logged action speed | value |
+|---|---|
+| min / median / p99 / max | 1.400 / 1.400 / 1.400 / 1.400 m/s |
+| fraction > 1.5 (over max_speed) | 0.00% |
+| fraction == 0 | 0.00% |
+
+The expert label is a **pristine, always-bounded, correctly-directed recovery command at every step** — even when the drone is inverted (tilt 180°) and 4–17m off-path, the logged velocity has |v|=1.4 m/s and points essentially straight back to the path (measured alignment dot(â, −p̂os_err) → −1.00 off-path). So the policy learns exactly the right map: *"off-path state → bounded velocity toward the path."*
+
+Combined with: (a) catastrophic states are **off the deployment distribution** — a well-tracking policy at test never reaches 17m/inverted, so its behavior there is irrelevant to the metric; (b) **reward-clip** (winning recipe) caps the −4…−17 outlier rewards so the value function isn't dominated by them; (c) path-relative state + the dense near-path majority soak up the function-approximation capacity.
+
+**This reframes §25's soft crashes.** Those 9.2% frozen tails also carry *correct* pure-pursuit labels (bounded return command) — they don't teach a *wrong* action. Their only cost is wasting samples on **inert/redundant transitions** (frozen: next_state≈state, no recovery actually demonstrated) and filling off-distribution corners — not poisoning the policy. Same lens as the memory note [logged action must causally explain the state transition]: `dagger_relabel` **deliberately** breaks causal consistency (logged action ≠ what moved the drone), which is fine for BC/AWR-style policy extraction (label = imitation target) but would be wrong for pure dynamics/Q-learning off these transitions. **Net: the "crashes" in both soft and DAgger data are largely benign because the labels are expert-clean; the real, already-known bottleneck remains off-path coverage/quality (§20c), not label contamination.**
