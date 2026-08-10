@@ -686,12 +686,12 @@ Checked whether the reference soft (all-real) policy `runs_soft_all2/merged/…_
 
 **Tilt (per rollout, one sd.run per fresh process):**
 
-| shape | tilt |max| | tilt RMS | >90° (flipped) | pos_err max |
+| shape | tilt max (deg) | tilt RMS (deg) | flips (>90°) | pos_err max (m) |
 |---|---|---|---|---|
-| circle | 11.6° | 5.4° | 0 | 0.02m |
-| triangle | 12.6° | 7.9° | 0 | 0.42m |
-| pentagon | 12.5° | 8.9° | 0 | 0.43m |
-| square | 12.9° | 8.2° | 0 | 0.42m |
+| circle | 11.6 | 5.4 | 0 | 0.02 |
+| triangle | 12.6 | 7.9 | 0 | 0.42 |
+| pentagon | 12.5 | 8.9 | 0 | 0.43 |
+| square | 12.9 | 8.2 | 0 | 0.42 |
 
 Peak tilt ~13°, RMS 6–9°, **zero flips** — matches the known ±~11° velocity-only oscillation (shape_dataset.py:553), already damped by att_d_gain_scale=0.3. Healthy for a real ~2kg drone.
 
@@ -710,7 +710,15 @@ Peak tilt ~13°, RMS 6–9°, **zero flips** — matches the known ±~11° veloc
 
 **FFT experimental setup & caveats (matters for reading the ringing verdict):**
 
-- **Record length = one full default rollout (3 laps), NOT a controlled steady-state segment.** Per shape: circle N=2962 (29.6s), triangle N=3306 (33.1s), square N=3727 (37.3s), pentagon N=4053 (40.5s), all at fs=100Hz. One FFT per rollout, Hanning window, DC bin zeroed.
-- **Frequency resolution = fs/N ≈ 0.025–0.034 Hz.** So the low-freq dominant peaks (0.1–0.32Hz) sit on only ~3–13 bins — the exact peak frequency is **coarsely resolved and should not be read as precise**. The 1Hz band of interest, by contrast, is well resolved (~30th bin, the 0.8–1.2Hz window spans ~12 bins), so the **"is there a sustained 1Hz ring?" verdict is valid** at this record length; only the sub-Hz peak *location* is fuzzy.
+- **Record length = one full default rollout (3 laps), NOT a controlled steady-state segment.** All at fs=100Hz, one FFT per rollout, Hanning window, DC bin zeroed. Per-shape record length and resulting frequency resolution (Δf = fs/N):
+
+| shape | samples N | duration (s) | Δf = fs/N (Hz) |
+|---|---|---|---|
+| circle | 2962 | 29.6 | 0.034 |
+| triangle | 3306 | 33.1 | 0.030 |
+| square | 3727 | 37.3 | 0.027 |
+| pentagon | 4053 | 40.5 | 0.025 |
+
+- **Frequency resolution Δf ≈ 0.025–0.034 Hz.** So the low-freq dominant peaks (0.1–0.32Hz) sit on only ~3–13 bins — the exact peak frequency is **coarsely resolved and should not be read as precise**. The 1Hz band of interest, by contrast, is well resolved (~30th bin, the 0.8–1.2Hz window spans ~12 bins), so the **"is there a sustained 1Hz ring?" verdict is valid** at this record length; only the sub-Hz peak *location* is fuzzy.
 - **Spectrum is non-stationary.** The whole trajectory (straights + corner accel/decel + laps) is FFT'd together, so corner kicks and maneuvering all mix in — this is *why* the dominant peak reads as a "maneuvering frequency" rather than a clean attitude mode. It bounds ringing (no sustained high-Q peak appears) but is not a pure attitude-loop spectrum.
 - **To sharpen if ever needed:** run a longer rollout (e.g. 10 laps ~100s) to ~3× the resolution, or window only straight-segment steady flight to isolate the pure attitude spectrum. Not done here — the current length already answers the sustained-ring question; deferred unless a finer attitude characterization is required.
