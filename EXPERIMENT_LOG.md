@@ -784,6 +784,25 @@ Combined with: (a) catastrophic states are **off the deployment distribution** �
 
 **This reframes §25's soft crashes.** Those 9.2% frozen tails also carry *correct* pure-pursuit labels (bounded return command) — they don't teach a *wrong* action. Their only cost is wasting samples on **inert/redundant transitions** (frozen: next_state≈state, no recovery actually demonstrated) and filling off-distribution corners — not poisoning the policy. Same lens as the memory note [logged action must causally explain the state transition]: `dagger_relabel` **deliberately** breaks causal consistency (logged action ≠ what moved the drone), which is fine for BC/AWR-style policy extraction (label = imitation target) but would be wrong for pure dynamics/Q-learning off these transitions. **Net: the "crashes" in both soft and DAgger data are largely benign because the labels are expert-clean; the real, already-known bottleneck remains off-path coverage/quality (§20c), not label contamination.**
 
+### 26b. Skipped findings, now recorded — the soft data almost never recovers from a kick, yet the policy recovers by *composing* local labels (2026-08-10)
+
+Two results surfaced during the §24-26 dig that were discussed but not written down.
+
+**(1) Data-side: a real kick in the soft data almost never recovers — it freezes.** Classifying every soft episode by whether a genuine excursion (|pos_err| > 0.2m) returns:
+
+| outcome (time-unbounded, per kicked episode) | count |
+|---|---|
+| episodes with a real excursion (>0.2m) | 40 / 423 |
+| **recovered eventually** (ended <0.1m) | **1 / 40** (and that one's peak was only 0.26m — barely off) |
+| **stuck** (ended still off-path) | **39 / 40** |
+
+The give-away is *best-after-peak* — the closest the drone gets back after its worst excursion: for the stuck episodes it ≈ the peak itself (e.g. peak 5.66m → best-after 5.48m → final 5.60m). It doesn't attempt a return; it freezes. (A tighter 3-second window view: 57 excursion events, only 21% recovered — the small/fast ones — and 79% never returned; excursion peaks median 2.26m, i.e. a 0.3m kick destabilizes into a 2m+ excursion.) **So the soft dataset contains essentially zero successful large-excursion recoveries.**
+
+**(2) The paradox, resolved: recovery is composed from local labels, not copied from a demonstration.** No soft (or DAgger) episode shows a full large-excursion→return trajectory — yet the deployed policy recovers from drift. Not a contradiction:
+- Every off-path state, even a frozen/inverted one, is *labeled* with pure-pursuit's correct "toward-path" velocity (§26: always |v|=1.4, alignment → −1). DAgger deposits these correct **local** labels densely across off-path states.
+- At deployment the policy drifts *gently* (stays in the controller's executable regime), applies the correct local action, steps back, repeats — **walking back one correct local step at a time, without ever having seen the whole walk.**
+- The collection drone (hard kick) physically *can't* recover (loss-of-control past 90° tilt, §27), so the label is "unexecutable advice" there; the deployment drone (gentle drift) *can* execute that same advice. That is exactly why "no recovery in the data, yet recovery at deployment" holds — and why the D=1.0 fix (§27), which widens the executable regime, matters for disturbances the closed loop actually meets.
+
 ## 27. Root cause of the crashes = the lowered attitude D-gain; soft v2 (D=1.0) recovers kicks & completes 500/500 (2026-08-11)
 
 §24-26 traced the no-recovery behavior to a loss-of-control. This nails the cause and fixes it. **Pure pursuit's command was never wrong** — frame-by-frame at a soft crash (circle-seed7, onset step 775), the logged action stays a correct, bounded ~1.3 m/s toward the path throughout, while the *actual* velocity diverges downward (vz −1.4 → −4.3) as tilt marches 44°→90°→105° (inverted) with angvel 5–9 rad/s. Mechanism: velocity-only mode tilts to chase a velocity error; **att_d_gain_scale=0.3** (lowered to damp the ±11° cruise oscillation, §24) is underdamped for a large transient → tilt overshoots past 90° → thrust vector points down → the correct command is now physically unexecutable (underactuated) → tumble, freeze.
