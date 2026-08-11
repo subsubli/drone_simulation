@@ -857,3 +857,29 @@ Parallel to §27 (soft v2 all-real), the **generator-augmented** comparison at D
 3. **INIT still diverges everywhere (0–3/80 LOST), gen-heavy worst** (real0.5+gan1.0 = 3/80 but up to 24m divergence; preserved in `EXPERIMENT_genv2_INIT_preserve.txt`). The coverage hole is untouched by the controller fix — DAgger remains mandatory regardless of generator or gain, consistent with §19/§21b.
 
 **Verdict:** At the deployable D=1.0 gain, generator augmentation is strictly safe on completion (all 500/500, instability gone) and **pure GAN yields the project's most precise policy yet on corners** while matching all-real on circle. The recovery-capable controller converts the §21 "blend is unstable" caveat into a non-issue. Generators trained on v2: `diffusion/gen_traj_cc_v2`, `gan/gen_gan_cc_v2` (best step 2000). Mix final policies under `mix_v2_*/final_run.txt`.
+
+## 29. hard v2 — heavy-kick data at D=1.0 is the first dataset whose recovery reaches the INIT policy (2026-08-11)
+
+The original hard dataset (6×1.5m kicks every episode, `data/merged1.5M.csv.gz`) was collected at att_d_gain_scale 0.3, where a hard kick tilts the drone past 90° into an unrecoverable inverted freeze (§27) — so its "recovery" data is ~60% frozen-inverted crashes. **hard v2** re-collects the identical recipe (same seeds) at **D=1.0**, where the drone actually recovers from those kicks. Question: does genuine recovery in the *initial* data reduce the pre-DAgger divergence that every other dataset suffers (§19/§21b/§27/§28)?
+
+**Data level — hard v2 is recovery-rich, not crash-rich.** Same seeds/kicks, only the gain changed:
+
+| dataset | flipped (tilt>90°) | off-path (>0.2m) | median | mean | p90 | p99 | max |
+|---|---|---|---|---|---|---|---|
+| soft v2 (gentle kicks) | 0.3% | 0.13% | 0.013 | 0.027 | 0.072 | 0.165 | 0.42 |
+| **hard v2 (D=1.0)** | **1.1%** | **32.3%** | 0.066 | 0.301 | 0.776 | 2.24 | 19.73 |
+| hard v1 (original, D=0.3) | ~60% | 78.8% | 3.334 | 5.468 | 14.34 | 25.61 | 38.09 |
+
+The gain flip turns hard v1's 79%-off-path/60%-crashed into hard v2's **32% off-path with only 1.1% crashes** — genuine kick→recover excursions (median tracking 66mm, recovery bursts to ~20m peak) instead of frozen wreckage. soft v2 has almost no off-path (0.13%) — its gentle kicks barely perturb at D=1.0, so it can't teach recovery.
+
+**INIT-only (no DAgger, D=1.0) — the coverage hole is measurably reduced for the first time:**
+
+| INIT dataset (D=1.0) | TOTAL trav | divergence (dist mean) | verdict |
+|---|---|---|---|
+| gan/cc mixes (§28) | 0–3/80 | 8–24m | LOST (flies off tens of m) |
+| soft v2 (§27) | 5/80 | 3–12m | LOST |
+| **hard v2** | **10/80** | **~1m (bounded)** | **triangle/square SLOW-advancing**, some COMPLETES |
+
+hard v2's init policy is the **first D=1.0 policy that does not catastrophically diverge**: divergence stays ~1m (vs 3–24m for every other D=1.0 dataset), triangle/square read **SLOW(advancing)** (tracking, just slow) rather than LOST, and 10/80 complete. The 32% recovery data directly taught the init policy "off-path → return," so the closed loop drifts and *recovers* instead of flying off. This is the first data-level dent in the coverage hole (§16/§19) — not a full fix (most shapes still don't complete pre-DAgger), but a clear divergence→bounded-advancing transition. (Note: soft v1's 24/80 init was higher but eval'd at the sluggish D=0.3, which mechanically caps divergence regardless of data; among D=1.0 datasets — the fair, deployable comparison — hard v2 is decisively best.)
+
+**FINAL (DAgger×2) — running; results appended below when complete.**
