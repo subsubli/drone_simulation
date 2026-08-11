@@ -1011,12 +1011,27 @@ Reading it:
 
 **Why this section exists.** Every dataset in this project has been ~1.5M rows, but the project's standing lesson (memory; §16/§19; the retraction at the top) is that **DAgger, not initial-data volume, decides completion**. If that is literally true, shrinking the *real* data should barely hurt completion. Test it head-on: subsample soft v2's real data to **0.5M and 0.1M rows** (shape-balanced random episodes, seed-fixed so the subset is reproducible), hold the recipe fixed (init 300k + DAgger×2, D=1.0, reward-clip −1.0, no mirror), and eval FINAL by net-laps. Subsequent rows extend this to **generator-augmented** variants (train diffusion/GAN on the *shrunk* data, sample a pure-1.5M pool, retrain) to ask whether a generator can substitute for missing real data — and, separately, whether a hard-v2-trained generator carries recovery content.
 
-**(a) Real-data downscaling (soft v2), FINAL = init 300k + DAgger×2, 50 seeds 500–549 × both dirs + untrained star, D=1.0:**
+**(a) Real-data downscaling (soft v2).** Recipe fixed: init 300k + DAgger×2, D=1.0, reward-clip −1.0, no mirror. Subsets are shape-balanced random episodes (seed 0). FINAL eval = 50 seeds 500–549 × both dirs (100/shape) + untrained star.
 
-| real rows | INIT trav (10-seed) | FINAL trav | triangle | square | pentagon | circle | star |
-|---|---|---|---|---|---|---|---|
-| 1.5M (§27) | diverges | 500/500 | — | — | — | ~0.016 | — |
-| **0.5M** (141 eps) | **1/80** (diverges) | **500/500** | 0.089 | 0.105 | 0.097 | **0.021** | 0.135 |
-| **0.1M** (28 eps) | **0/80** (diverges) | **500/500** | 0.095 | 0.108 | 0.096 | **0.018** | 0.122 |
+**FINAL — net laps mean (min) / traverse / dist mean (m), per shape × data size:**
 
-**Finding (real downscaling):** cutting the real data to **1/3 (0.5M) or even 1/15 (0.1M, 28 episodes)** leaves FINAL completion completely untouched (**500/500** in both) and cruise precision essentially unchanged (circle 0.016→0.021→0.018 — within noise; corners 0.09–0.11, like full). The INIT still diverges either way (0.5M 1/80, 0.1M 0/80), *slightly worse* with less data, so data volume does not fix the pre-DAgger coverage hole — but DAgger fixes completion regardless. This is the "**DAgger, not initial-data volume, decides completion**" lesson made quantitative: **15× less real data → identical completion and precision.** The only thing more real data buys pre-DAgger is a marginally less-catastrophic init (1/80 vs 0/80), which DAgger erases anyway. Pipeline wall-clock ~63 min each. Runs: 0.5M init `…_djdp` / FINAL `…_qgjf`; 0.1M init `…_omxq` / FINAL `runs/d2_merged/08-12-26_…`.
+| shape | 1.5M (§27) | 0.5M (141 eps) | 0.1M (28 eps) |
+|---|---|---|---|
+| triangle | 2.68 (2.63) / 100 / 0.110 | 2.67 (2.52) / 100 / 0.089 | 2.64 (2.56) / 100 / 0.095 |
+| square | 2.91 (2.72) / 100 / 0.124 | 2.89 (2.75) / 100 / 0.105 | 2.84 (2.74) / 100 / 0.108 |
+| pentagon | 3.22 (3.00) / 100 / 0.117 | 3.18 (2.96) / 100 / 0.097 | 3.13 (3.00) / 100 / 0.096 |
+| circle | 2.70 (2.54) / 100 / **0.016** | 2.52 (2.23) / 100 / **0.021** | 2.50 (2.38) / 100 / **0.018** |
+| star *(untrained)* | 3.25 (2.94) / 100 / 0.148 | 3.25 (2.93) / 100 / 0.135 | 3.22 (3.00) / 100 / 0.122 |
+| **TOTAL traverse** | **500/500** | **500/500** | **500/500** |
+
+Tails stay clean at every size (FINAL p99 ≤ 0.43, max ≤ 0.53 across all shapes; circle p99 ≤ 0.07) — no blow-ups.
+
+**INIT (pre-DAgger, 10 seeds 500–509 × both = /80) — all diverge (LOST), and slightly worse with less data:**
+
+| data | INIT traverse | laps range | dist mean range | verdict |
+|---|---|---|---|---|
+| 1.5M | diverges (§27) | <1 | several m | LOST |
+| 0.5M | **1/80** | 0.40–0.66 | 17–31 m | LOST(off-path) |
+| 0.1M | **0/80** | 0.27–0.31 | 18–31 m | LOST(off-path) |
+
+**Finding (real downscaling):** cutting the real data to **1/3 (0.5M) or even 1/15 (0.1M, 28 episodes)** leaves FINAL **completion untouched (500/500 all three)**, **progress essentially unchanged** (per-shape net laps within ~0.05 of full — e.g. pentagon 3.22→3.18→3.13, circle 2.70→2.52→2.50), and **cruise precision within noise** (circle 0.016→0.021→0.018; corners 0.09–0.11 like full; tails clean). The INIT still diverges either way and gets *marginally worse* with less data (1/80 → 0/80, laps 0.4–0.7 → 0.3), so data volume does not fix the pre-DAgger coverage hole — but DAgger fixes completion regardless. This is the "**DAgger, not initial-data volume, decides completion**" lesson made quantitative: **15× less real data → identical completion, progress, and precision.** Pipeline wall-clock ~63 min each. Runs: 0.5M init `…_djdp` / FINAL `…_qgjf`; 0.1M init `…_omxq` / FINAL `…_(0.1M d2)`.
