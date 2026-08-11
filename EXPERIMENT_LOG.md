@@ -1009,9 +1009,9 @@ Reading it:
 
 ## 31. Data-scaling — how little real data does the recipe need? (init+DAgger, 2026-08-12)
 
-**Why this section exists.** Every dataset in this project has been ~1.5M rows, but the project's standing lesson (memory; §16/§19; the retraction at the top) is that **DAgger, not initial-data volume, decides completion**. If that is literally true, shrinking the *real* data should barely hurt completion. Test it head-on: subsample soft v2's real data to **0.5M and 0.1M rows** (shape-balanced random episodes, seed-fixed so the subset is reproducible), hold the recipe fixed (init 300k + DAgger×2, D=1.0, reward-clip −1.0, no mirror), and eval FINAL by net-laps. Subsequent rows extend this to **generator-augmented** variants (train diffusion/GAN on the *shrunk* data, sample a pure-1.5M pool, retrain) to ask whether a generator can substitute for missing real data — and, separately, whether a hard-v2-trained generator carries recovery content.
+**Why this section exists.** Every dataset in this project has been ~1.5M rows, but the project's standing lesson (memory; §16/§19; the retraction at the top) is that **DAgger, not initial-data volume, decides completion**. If that is literally true, shrinking the *real* data should barely hurt completion. Test it head-on: subsample soft v2's real data to **0.5M and 0.1M rows** (shape-balanced random episodes, seed-fixed so the subset is reproducible), hold the recipe fixed (init 300k + DAgger×2, D=1.0, reward-clip −1.0), and eval FINAL by net-laps. Subsequent rows extend this to **generator-augmented** variants (train diffusion/GAN on the *shrunk* data, sample a pure-1.5M pool, retrain) to ask whether a generator can substitute for missing real data — and, separately, whether a hard-v2-trained generator carries recovery content.
 
-**(a) Real-data downscaling (soft v2).** Recipe fixed: init 300k + DAgger×2, D=1.0, reward-clip −1.0, no mirror. Subsets are shape-balanced random episodes (seed 0). FINAL eval = 50 seeds 500–549 × both dirs (100/shape) + untrained star.
+**(a) Real-data downscaling (soft v2).** Recipe fixed: init 300k + DAgger×2, D=1.0, reward-clip −1.0. Subsets are shape-balanced random episodes (seed 0). FINAL eval = 50 seeds 500–549 × both dirs (100/shape) + untrained star.
 
 **FINAL — net laps mean (min) / traverse / dist mean (m), per shape × data size:**
 
