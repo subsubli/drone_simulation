@@ -1,4 +1,12 @@
 # Implicit Q-Learning (IQL) in PyTorch
+
+> **Source / provenance (this project):** the IQL code here is vendored from
+> **https://github.com/gwthomas/IQL-PyTorch** (Gordon W. Thomas's minimal PyTorch IQL).
+> Algorithm: Kostrikov, Nair, Levine — *Offline Reinforcement Learning with Implicit Q-Learning*
+> (ICLR 2022), [arXiv:2110.06169](https://arxiv.org/abs/2110.06169). Official (JAX) implementation:
+> https://github.com/ikostrikov/implicit_q_learning. In this drone project it is adapted to train on
+> the shape-tracing CSV datasets (see `../EXPERIMENT_LOG.md`); the offline-RL algorithm itself is unchanged.
+
 This repository houses a minimal PyTorch implementation of [Implicit Q-Learning (IQL)](https://arxiv.org/abs/2110.06169), an offline reinforcement learning algorithm, along with a script to run IQL on tasks from the [D4RL](https://github.com/rail-berkeley/d4rl) benchmark.
 
 To install the dependencies, use `pip install -r requirements.txt`.
