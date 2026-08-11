@@ -822,14 +822,18 @@ The give-away is *best-after-peak* — the closest the drone gets back after its
 
 **FINAL (DAgger×2, 50-seed 500–549 × both dirs + untrained star), v2 (D=1.0) vs v1 all-real soft ref (D=0.3, §21):**
 
-| shape | v1 trav / dist | v2 trav / dist | v2 p99 / max |
+Cell = **laps mean (min) / trav / dist mean**:
+
+| shape | v1 (D=0.3) | v2 (D=1.0) | v2 p99 / max |
 |---|---|---|---|
-| triangle | 100/100 / 0.104 | 100/100 / 0.110 | 0.431 / 0.488 |
-| square | 100/100 / 0.116 | 100/100 / 0.124 | 0.443 / 0.507 |
-| pentagon | 100/100 / 0.109 | 100/100 / 0.117 | 0.421 / 0.494 |
-| circle | 100/100 / **0.007** | 100/100 / **0.016** | 0.065 / 0.141 |
-| star (untrained) | **98/100** / 0.165 | **100/100** / 0.148 | 0.433 / 0.518 |
+| triangle | 2.71 (2.65) / 100 / 0.104 | 2.68 (2.63) / 100 / 0.110 | 0.431 / 0.488 |
+| square | 2.99 (2.90) / 100 / 0.116 | 2.91 (2.72) / 100 / 0.124 | 0.443 / 0.507 |
+| pentagon | 3.30 (3.20) / 100 / 0.109 | 3.22 (3.00) / 100 / 0.117 | 0.421 / 0.494 |
+| circle | 2.76 (2.57) / 100 / **0.007** | 2.70 (2.54) / 100 / **0.016** | 0.065 / 0.141 |
+| star (untrained) | 3.24 (1.00) / **98** / 0.165 | 3.25 (2.94) / **100** / 0.148 | 0.433 / 0.518 |
 | TOTAL (incl. star) | 498/500 | **500/500** | tight, zero blow-ups |
+
+(trav is out of 100 per shape; v1 star's min-laps 1.00 = the 2 seeds that didn't complete.)
 
 **INIT-only (no DAgger, D=1.0):** 5/80 traverse (circle 5/20, one COMPLETES; tri/sq/pent 0/20), dist 3–12m, LOST. Worse than v1's §16 init (24/80, <1m) — but confounded: v1 init was eval'd at the sluggish D=0.3 (drifts slowly, stays <1m), v2 at the responsive D=1.0 (faithfully executes the *untrained* init policy's bad commands → diverges further). Consistent with the gain finding: D=1.0 recovers *correct* (pure-pursuit) commands but amplifies *wrong* (raw-init-policy) ones. DAgger then washes this out.
 
