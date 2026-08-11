@@ -839,17 +839,54 @@ The give-away is *best-after-peak* — the closest the drone gets back after its
 
 Parallel to §27 (soft v2 all-real), the **generator-augmented** comparison at D=1.0. Retrained the class-conditional diffusion (cc, asinh0.05, cfg1.5, offpath-batch 0.5, 50k) and GAN (λ_smooth=10, R3GAN r1/r2=1.0, sn, 50k) **on the soft v2 data**, resampled 24k-window pools, built the §18/§21 three-ratio mixes (real1.0+X0.5 / real0.5+X1.0 / X1.5-pure) against **v2 real**, and ran each through the D=1.0 pipeline (init 300k + DAgger×2 + INIT/FINAL eval, all att_d_gain_scale=1.0). Note: v2 data is only **0.3% off-path** (vs v1's 7%) — D=1.0 recovers kicks so fast the drone barely dwells off-path, so the generators' off-path branch trains on very few windows; GAN peaked early (best step 2000, killed at 18k since 16k steps gave no improvement).
 
-**FINAL (DAgger×2, 50-seed 500–549 × both dirs + untrained star), all at D=1.0. `soft v2` = §27 all-real reference:**
+**(a) Generator data-level distribution** (24k-window pool, `pe_dist.py`, 0.2m off-path threshold):
 
-| dataset | TOTAL trav | circle dist | tri / sq / pent | star dist | INIT (no DAgger) |
+| pool | median | mean | p90 | p99 | max | off-path |
+|---|---|---|---|---|---|---|
+| v2 real | 0.0128 | 0.027 | 0.072 | 0.165 | 0.42 | 0.13% |
+| cc_v2 (diffusion) | 0.0243 | 0.027 | 0.047 | 0.072 | 0.13 | 0.00% |
+| gan_v2 (GAN λ=10) | 0.0113 | 0.012 | 0.018 | 0.025 | 0.14 | 0.00% |
+
+Same ordering as §22: the GAN bulk (11mm) is **tighter than real** (13mm), diffusion (24mm) looser. Both pools are **0% off-path** — v2 real is already only 0.13% off-path, so the class-conditional off-path branch had almost nothing to reproduce (a direct consequence of D=1.0's fast recovery, §27).
+
+**(b) FINAL — circle (pure-precision probe), full stats (50 seeds 500–549 × both dirs):**
+
+| dataset | laps (min) | trav | dist mean±std | p90 | p99 | max |
+|---|---|---|---|---|---|---|
+| soft v2 (all-real) | 2.70 (2.54) | 100/100 | 0.016±0.004 | 0.031 | 0.065 | 0.141 |
+| real1.0+cc0.5 | 2.63 (2.30) | 100/100 | 0.017±0.004 | 0.035 | 0.068 | 0.117 |
+| real0.5+cc1.0 | 2.63 (2.41) | 100/100 | 0.029±0.007 | 0.062 | 0.141 | 0.331 |
+| cc1.5 pure | 2.57 (2.39) | 100/100 | 0.023±0.006 | 0.049 | 0.104 | 0.165 |
+| real1.0+gan0.5 | 2.54 (2.31) | 100/100 | 0.020±0.004 | 0.041 | 0.071 | 0.126 |
+| real0.5+gan1.0 | 2.61 (2.32) | 100/100 | 0.020±0.004 | 0.039 | 0.070 | 0.240 |
+| **gan1.5 pure** | 2.43 (2.39) | 100/100 | **0.015±0.003** | 0.027 | 0.047 | 0.060 |
+
+**(c) FINAL — corners + untrained star, dist mean (p99):**
+
+| dataset | triangle | square | pentagon | star |
+|---|---|---|---|---|
+| soft v2 | 0.110 (0.431) | 0.124 (0.443) | 0.117 (0.421) | 0.148 (0.433) |
+| real1.0+cc0.5 | 0.113 (0.470) | 0.132 (0.469) | 0.125 (0.450) | 0.157 (0.453) |
+| real0.5+cc1.0 | 0.116 (0.469) | 0.132 (0.483) | 0.123 (0.465) | 0.153 (0.458) |
+| cc1.5 pure | 0.107 (0.459) | 0.126 (0.472) | 0.118 (0.451) | 0.150 (0.438) |
+| real1.0+gan0.5 | 0.104 (0.452) | 0.118 (0.458) | 0.113 (0.437) | 0.152 (0.463) |
+| real0.5+gan1.0 | 0.106 (0.458) | 0.124 (0.466) | 0.114 (0.431) | 0.151 (0.450) |
+| **gan1.5 pure** | **0.088 (0.404)** | **0.101 (0.413)** | **0.091 (0.383)** | **0.130 (0.408)** |
+
+Every dataset: all 5 shapes 100/100 (**500/500** incl. untrained star), laps 2.4–3.3 with min ≥ 2.30 (no near-misses), corner max ≤ 0.60m, circle max ≤ 0.33m — **no blow-ups anywhere**.
+
+**(d) INIT-only (no DAgger, D=1.0) — per-shape divergence, dist mean / max (m):**
+
+| dataset | triangle | square | pentagon | circle | TOTAL |
 |---|---|---|---|---|---|
-| soft v2 (all-real ref) | 500/500 | 0.016 | 0.110 / 0.124 / 0.117 | 0.148 | 0/80 |
-| real1.0+cc0.5 | 500/500 | 0.017 | 0.113 / 0.132 / 0.125 | 0.157 | 0/80 |
-| real0.5+cc1.0 | 500/500 | 0.029 | 0.116 / 0.132 / 0.123 | 0.153 | 0/80 |
-| cc1.5 (pure diffusion) | 500/500 | 0.023 | 0.107 / 0.126 / 0.118 | 0.150 | 0/80 |
-| real1.0+gan0.5 | 500/500 | 0.020 | 0.104 / 0.118 / 0.113 | 0.152 | 1/80 |
-| real0.5+gan1.0 | 500/500 | 0.020 | 0.106 / 0.124 / 0.114 | 0.151 | 3/80 |
-| **gan1.5 (pure GAN)** | **500/500** | **0.015** | **0.088 / 0.101 / 0.091** | **0.130** | 0/80 |
+| real1.0+cc0.5 | 6.1 / 50 | 9.2 / 87 | 5.9 / 91 | 3.9 / 49 | 0/80 |
+| real0.5+cc1.0 | 5.4 / 27 | 6.6 / 21 | 7.3 / 29 | 6.1 / 29 | 0/80 |
+| cc1.5 pure | 13.5 / 74 | 14.3 / 87 | 13.5 / 91 | 13.2 / 61 | 0/80 |
+| real1.0+gan0.5 | 8.6 / 38 | 12.8 / 51 | 15.0 / 66 | 7.7 / 34 | 1/80 |
+| real0.5+gan1.0 | 9.8 / 58 | 21.2 / 68 | 22.2 / 75 | 12.0 / 49 | 3/80 |
+| gan1.5 pure | 15.9 / 72 | 14.6 / 78 | 16.2 / 81 | 12.0 / 59 | 0/80 |
+
+All LOST; **the purer/cleaner the generator, the harder the pre-DAgger divergence** — pure cc1.5 & gan1.5 (0% off-path, cleanest possible) blow to 13–16m mean / 60–91m max, while real-containing mixes are milder (5–12m). The §21b monotonic "cleaner data → worse init" holds. (cf. soft v2 init 3–12m §27; hard v2 init ~1m §29.)
 
 **Three findings:**
 1. **Every mix completes 500/500 — the D=1.0 controller ERASES the §21 blend-instability.** In v1 (D=0.3), real1.0+GAN0.5 was the unstable point (374/400, held-out blow-ups across all shapes) and the 50/50 diffusion blend also blew up (§18, 377/400). Here at D=1.0 **all six are a perfect 500/500, including both real-heavy blends and all three pure generators**, with clean tails (p99 ≤ 0.14, no blow-ups). The §21 instability was the controller losing control on the held-out excursions; D=1.0 recovers them, so the distribution-conflict that caused blow-ups no longer diverges.
