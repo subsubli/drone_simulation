@@ -20,14 +20,26 @@ global-pool critic with a projection term for conditioning. Default recipe is **
 
 ## Architecture
 
-- **Generator**: `Linear(latent → ch·H)` → reshape `(B, ch, H)` + broadcast-added class embedding →
-  ResBlocks → `Conv1d(ch, feat)`. latent 128, ch 128, depth 6.
-- **Discriminator**: conv + ResBlocks + global-avg-pool → `Linear(ch, 1)` head + Miyato projection
-  `(cproj(c) · pooled).sum`. GroupNorm (not BatchNorm). Every layer spectral-normalized under `--d-reg sn`.
-- **Loss**: RpGAN `softplus(D(fake) − D(real))` (D) / `softplus(D(real_g) − D(fake))` (G); R1 on real +
-  R2 on fake (`0.5·γ·|∇D|²`). TTUR/dynamic-D hacks exist but are unnecessary once RpGAN is used.
-- **Best-checkpoint**: GANs are non-monotonic, so every `--eval-every` steps the EMA generator is scored
-  (on-path median + pe_jerk) and the best is saved to `model.pt`.
+`feat = 19`, `H = 64`, `latent = 128`, `ch = 128`, `depth = 6`. Shared backbone **`ResBlocks`**: `depth`
+blocks of `Conv1d(ch→ch, k=5, pad=2·d, dilation=d) → GroupNorm(8, ch) → SiLU`, applied residually
+(`h = h + blk(h)`) — the *same* 1D temporal-conv stack as the diffusion denoiser (`sn=True` spectral-
+normalizes its convs, D-side only). ~**G 1.56M / D 0.51M** params.
+
+- **Generator** `z:(B,latent) [+ c] → (B,H,feat)`: `fc = Linear(latent → ch·H)` → `view (B, ch, H)`;
+  class `Embedding(n_classes→ch)` broadcast-added `+ cemb(c)[:,:,None]` (exactly like the diffusion
+  timestep embedding); `ResBlocks` (no spectral norm); `out = Conv1d(ch→feat, k=5, pad=2)` → transpose.
+- **Discriminator** `x:(B,H,feat) [+ c] → (B,1)`: `inp = Conv1d(feat→ch, k=5, pad=2)` → `ResBlocks` →
+  **global average pool over time** `h.mean(dim=2) → (B, ch)` → `head = Linear(ch→1)`; **Miyato
+  projection** conditioning adds `+ (cproj(c) · h).sum(dim=1)` where `cproj = Embedding(n_classes→ch)`.
+  GroupNorm (not BatchNorm) so the WGAN-GP penalty stays well-defined; every layer spectral-normalized
+  under `--d-reg sn`.
+- **Loss**: RpGAN — `lossD = softplus(D(fake) − D(real)).mean()`, `lossG = softplus(D(real_g) − D(fake)).mean()`
+  (relativistic: only the real−fake gap matters). R1 on real + R2 on fake, `lossD += 0.5·γ·|∇D|²` each
+  (`--r1-gamma --r2-gamma`, R3GAN). (`--loss hinge` + `--d-reg sn/gp` are the alternatives.) TTUR /
+  dynamic-D balance hacks exist but are unnecessary once RpGAN is used.
+- **Best-checkpoint**: GANs are non-monotonic, so every `--eval-every` steps the **EMA generator**
+  (`--ema 0.999`) is scored (on-path pos_err median + pe_jerk) and only the best is saved to `model.pt`.
+  Cosine LR down to `--lr-min-frac` of the base LR.
 
 ## Project-specific additions (NOT from a paper — from this project's experiments)
 

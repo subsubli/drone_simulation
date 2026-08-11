@@ -17,13 +17,24 @@ learned and sampled separately.
 | **Min-SNR loss weighting** (`--min-snr-gamma`, weight ε-MSE by min(SNR,γ)/SNR) | Hang, Gu, Wang, Wu, Chen, Bao, Guo — *Efficient Diffusion Training via Min-SNR Weighting Strategy* (ICCV 2023) | arXiv:2303.09556 |
 | **DDIM sampler** (`--sampler ddim`, deterministic/subsampled reverse) | Song, Meng, Ermon — *Denoising Diffusion Implicit Models* (ICLR 2021) | arXiv:2010.02502 |
 
-## Architecture
+## Architecture (`TemporalDenoiser`, ε-prediction UNet-free 1D conv net)
 
-`TemporalDenoiser`: 1D conv over the H time-axis (sees sequence structure, not a flattened blob); the
-timestep embedding and the class embedding are added the same broadcast way; `ch=128`, `depth=6`
-ResBlocks. ε-prediction with T=1000 (DDPM) or subsampled DDIM. Classifier-free guidance via a NULL
-class. `n_classes=0` reproduces byte-identical unconditional behaviour so pre-class checkpoints load
-unchanged.
+Feature dim `feat = 19` (state 16 + action 3), window `H = 64`, width `ch = 128`, `depth = 6`.
+Forward `(x:(B,H,feat), t:(B,), c:(B,) | None) → ε̂:(B,H,feat)`:
+
+1. `x.transpose(1,2)` → `(B, feat, H)`, then **input conv** `Conv1d(feat→ch, k=5, pad=2)` → `(B, ch, H)`.
+2. **Timestep embedding**: `temb = Linear(1→ch)` applied to `t/1000`, broadcast-added over time → `+ temb[:,:,None]`.
+3. **Class embedding** (conditional only): `cemb = Embedding(n_classes→ch)`, `+ cemb(c)[:,:,None]` — added the *same* broadcast way as `temb`. `n_classes=0` ⇒ byte-identical unconditional (pre-class checkpoints load unchanged).
+4. **Residual stack**: `depth=6` blocks, each `Conv1d(ch→ch, k=5, pad=2·d, dilation=d) → GroupNorm(8, ch) → SiLU`, applied residually (`h = h + blk(h)`). `d=1` (undilated, default; RF ≈ 33 < 64) or `d = 1,2,4,8,16` with `--dilated` (RF > 64).
+5. **Output conv** `Conv1d(ch→feat, k=5, pad=2)` → `transpose` → `(B, H, feat)`.
+
+No down/up-sampling — constant `H` throughout (a flat 1D-conv denoiser, the "lite" in Diffuser-lite).
+
+**Diffusion process**: `T=1000`, `betas = linspace(1e-4, 0.02, T)`, `ᾱ = cumprod(1−betas)`; ε-prediction
+MSE loss (optionally min-SNR-weighted). Weights kept as an **EMA shadow** (`--ema 0.999`); sampling uses
+the EMA weights. **Sampling**: DDPM ancestral (inject noise each step) or DDIM (`--sampler ddim`,
+subsampled, `--eta` stochasticity); classifier-free guidance blends `ε = ε_uncond + w·(ε_cond − ε_uncond)`
+(`--cfg-weight`). Cosine LR with warmup.
 
 ## Project-specific additions (NOT from a paper — from this project's experiments)
 
@@ -55,3 +66,31 @@ python trajectory_diffusion.py --load gen_traj_cc/model.pt \
 
 See `pe_dist.py` for the Table-14-style `|pos_err|` distribution of a generated pool, and
 EXPERIMENT_LOG.md §15/§18/§23/§28 for the downstream augmentation results.
+
+---
+
+## Alternative: transition-level diffusion (`transition_diffusion.py`, SynthER-style)
+
+A separate, simpler generator that diffuses **single transitions** instead of whole trajectory windows.
+It learns the joint `(s, a, r, s')` distribution and samples synthetic transitions, written as **2-row
+mini-episodes** (row0 = `s,a,r,done=False`; row1 = `s',0,0,done=True`) so the same
+`merge_shape_dataset.py` / `drone_dataset.py` pipeline reads each back as one `(s,a,r,s')` transition.
+
+| Component | Paper | ref |
+|---|---|---|
+| **Transition-level diffusion for RL** (diffuse `(s,a,r,s')`, upsample the replay buffer) | Lu, Ball, Parker-Holder, Osborne, Roberts — *Synthetic Experience Replay* (SynthER, NeurIPS 2023) | arXiv:2303.06614 |
+| **DDPM** (same ε/DDPM core as above) | Ho, Jain, Abbeel (NeurIPS 2020) | arXiv:2006.11239 |
+
+**Architecture**: a plain **MLP denoiser** (not the 1D-conv net) on the flat `DIM = 36` transition vector
+`[s(16) | a(3) | r(1) | s'(16)]` — `Linear(36+1 → 512) → SiLU → Linear(512→512) → SiLU → Linear(512→512)
+→ SiLU → Linear(512→36)`, the `+1` being the timestep `t/1000`. DDPM T=1000.
+
+```bash
+python transition_diffusion.py --csv <merged.csv> --steps 30000 --n-gen 200000 --per-file 20000 --out gen_diffusion
+```
+
+**Why the trajectory generator (top of this file) is the one actually used**: transition-level sampling
+has no temporal structure, so it can emit `(s,a,r,s')` tuples whose action doesn't causally explain the
+state change (cf. the memory note "logged action must causally explain the transition"). The trajectory
+diffusion generates whole coherent episodes (action |mean| ≈ 13.9, not 0), which is why it — not this
+SynthER-style variant — was carried through the augmentation experiments (§15/§18/§28).
