@@ -64,6 +64,14 @@ python trajectory_gan.py --load gen_gan_cc/model.pt \
   --n-gen 24000 --gen-offpath-frac -1.0 --out gen_pool_gan
 ```
 
+> ⚠️ **`--offpath-batch-frac 0.5` on low-off-path data (e.g. soft v2, 0.3% off-path):** the
+> class-conditional **off-path branch collapses**. It trains on only ~160 windows there, so even forcing
+> `--gen-offpath-frac 1.0` at generation produces no real excursions (0% > 0.2m; the GAN outputs a
+> razor-thin ~0.13m band) — see **EXPERIMENT_LOG.md §28**. `--offpath-batch-frac` oversamples but cannot
+> manufacture diversity from ~160 windows (cf. §20c: even 3228 collapse). This is expected, not a bug:
+> on such data the pool is on-path-only and recovery coverage must come from elsewhere (a heavy-kick
+> dataset like hard v2 §29, and DAgger). The knob matters on high-off-path data (v1: 7%; hard: ~32%).
+
 See EXPERIMENT_LOG.md §20/§21/§28 for the downstream augmentation results (headline: the
 smoothness-penalized GAN's ultra-precise, cleaner-than-real data yields the most precise augmented
 policy in the project).

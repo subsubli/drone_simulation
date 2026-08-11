@@ -64,6 +64,12 @@ python trajectory_diffusion.py --load gen_traj_cc/model.pt \
   --n-gen 24000 --gen-offpath-frac -1.0 --cfg-weight 1.5 --gen-batch 200 --out gen_pool_cc
 ```
 
+> ⚠️ **`--offpath-batch-frac 0.5` on low-off-path data (e.g. soft v2, 0.3% off-path):** the off-path
+> class branch trains on only ~160 windows and **collapses** — even `--gen-offpath-frac 1.0` then yields
+> 0% real off-path (see **EXPERIMENT_LOG.md §28**). Expected on such data (the pool is on-path-only;
+> recovery coverage comes from a heavy-kick dataset like hard v2 §29 + DAgger). The knob is only useful
+> on high-off-path data (v1: 7%; hard: ~32%).
+
 See `pe_dist.py` for the Table-14-style `|pos_err|` distribution of a generated pool, and
 EXPERIMENT_LOG.md §15/§18/§23/§28 for the downstream augmentation results.
 
