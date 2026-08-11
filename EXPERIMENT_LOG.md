@@ -1013,18 +1013,18 @@ Reading it:
 
 **(a) Real-data downscaling (soft v2).** Recipe fixed: init 300k + DAgger×2, D=1.0, reward-clip −1.0. Subsets are shape-balanced random episodes (seed 0). FINAL eval = 50 seeds 500–549 × both dirs (100/shape) + untrained star.
 
-**FINAL — net laps mean (min) / traverse / dist mean (m), per shape × data size:**
+**FINAL — net laps mean (min) / traverse / dist mean / p99 (m), per shape × data size:**
 
 | shape | 1.5M (§27) | 0.5M (141 eps) | 0.1M (28 eps) |
 |---|---|---|---|
-| triangle | 2.68 (2.63) / 100 / 0.110 | 2.67 (2.52) / 100 / 0.089 | 2.64 (2.56) / 100 / 0.095 |
-| square | 2.91 (2.72) / 100 / 0.124 | 2.89 (2.75) / 100 / 0.105 | 2.84 (2.74) / 100 / 0.108 |
-| pentagon | 3.22 (3.00) / 100 / 0.117 | 3.18 (2.96) / 100 / 0.097 | 3.13 (3.00) / 100 / 0.096 |
-| circle | 2.70 (2.54) / 100 / **0.016** | 2.52 (2.23) / 100 / **0.021** | 2.50 (2.38) / 100 / **0.018** |
-| star *(untrained)* | 3.25 (2.94) / 100 / 0.148 | 3.25 (2.93) / 100 / 0.135 | 3.22 (3.00) / 100 / 0.122 |
+| triangle | 2.68 (2.63) / 100 / 0.110 / 0.431 | 2.67 (2.52) / 100 / 0.089 / 0.419 | 2.64 (2.56) / 100 / 0.095 / 0.434 |
+| square | 2.91 (2.72) / 100 / 0.124 / 0.443 | 2.89 (2.75) / 100 / 0.105 / 0.429 | 2.84 (2.74) / 100 / 0.108 / 0.432 |
+| pentagon | 3.22 (3.00) / 100 / 0.117 / 0.421 | 3.18 (2.96) / 100 / 0.097 / 0.407 | 3.13 (3.00) / 100 / 0.096 / 0.404 |
+| circle | 2.70 (2.54) / 100 / **0.016** / 0.065 | 2.52 (2.23) / 100 / **0.021** / 0.072 | 2.50 (2.38) / 100 / **0.018** / 0.060 |
+| star *(untrained)* | 3.25 (2.94) / 100 / 0.148 / 0.433 | 3.25 (2.93) / 100 / 0.135 / 0.417 | 3.22 (3.00) / 100 / 0.122 / 0.390 |
 | **TOTAL traverse** | **500/500** | **500/500** | **500/500** |
 
-Tails stay clean at every size (FINAL p99 ≤ 0.43, max ≤ 0.53 across all shapes; circle p99 ≤ 0.07) — no blow-ups.
+Tails stay clean at every size (max ≤ 0.53 across all shapes) — no blow-ups.
 
 **INIT (pre-DAgger, 10 seeds 500–509 × both = /80) — all diverge (LOST), and slightly worse with less data:**
 
@@ -1038,17 +1038,17 @@ Tails stay clean at every size (FINAL p99 ≤ 0.43, max ≤ 0.53 across all shap
 
 **(b) Generator-augmented downscaling (soft v2).** Can a generative model *substitute* for the missing real data? Train diffusion / GAN on the **shrunk** subset (0.5M or 0.1M), sample a **pure 1.5M-row** pool from that generator (24000 windows × 64, `--gen-offpath-frac -1.0`, no real rows in the mix — `build_mix --real-rows 0`), then run the same init 300k + DAgger×2 pipeline on the pure-generated data. This is a harder ask than §28 (which blended generated data into full real): here the generator is the *only* source of the initial distribution, and it was itself trained on as little as 0.1M real rows. FINAL eval identical protocol (50 seeds 500–549 × both + star).
 
-**FINAL — net laps mean (min) / traverse / dist mean (m), per shape × generator × source-size:**
+**FINAL — net laps mean (min) / traverse / dist mean / p99 (m), per shape × generator × source-size:**
 
 | shape | diff 0.5M | diff 0.1M | GAN 0.5M | GAN 0.1M |
 |---|---|---|---|---|
-| triangle | 2.64 (2.55) / 100 / 0.101 | _running_ | _running_ | _running_ |
-| square | 2.84 (2.70) / 100 / 0.116 | _running_ | _running_ | _running_ |
-| pentagon | 3.13 (3.02) / 100 / 0.106 | _running_ | _running_ | _running_ |
-| circle | 2.57 (2.47) / 100 / **0.012** | _running_ | _running_ | _running_ |
-| star *(untrained)* | 3.23 (2.95) / 100 / 0.132 | _running_ | _running_ | _running_ |
+| triangle | 2.64 (2.55) / 100 / 0.101 / 0.454 | _running_ | _running_ | _running_ |
+| square | 2.84 (2.70) / 100 / 0.116 / 0.454 | _running_ | _running_ | _running_ |
+| pentagon | 3.13 (3.02) / 100 / 0.106 / 0.427 | _running_ | _running_ | _running_ |
+| circle | 2.57 (2.47) / 100 / **0.012** / 0.045 | _running_ | _running_ | _running_ |
+| star *(untrained)* | 3.23 (2.95) / 100 / 0.132 / 0.414 | _running_ | _running_ | _running_ |
 | **TOTAL traverse** | **500/500** | _running_ | _running_ | _running_ |
 
-INIT (pre-DAgger, /80): diff 0.5M **0/80** (LOST, laps 0.29–0.37, dist 25–39m). Tails clean (FINAL p99 ≤ 0.45, max ≤ 0.51; circle p99 ≤ 0.05).
+INIT (pre-DAgger, /80): diff 0.5M **0/80** (LOST, laps 0.29–0.37, dist 25–39m). Tails clean (FINAL max ≤ 0.51; circle p99 0.045).
 
 **Finding so far (diff 0.5M pure-gen):** a diffusion generator trained on only **0.5M real rows**, sampled to a pure 1.5M pool with **zero real data in the training mix**, still reaches **FINAL 500/500** with progress and precision indistinguishable from real 0.5M (triangle 2.64/2.67, circle cruise even tighter at 0.012 vs 0.021) — the untrained star also generalizes 100/100. So the generated distribution carries enough on-path + recovery structure that DAgger closes the rest; a pure-synthetic initial dataset is a viable substitute. Remaining cells (diff 0.1M, GAN 0.5M/0.1M) running.
