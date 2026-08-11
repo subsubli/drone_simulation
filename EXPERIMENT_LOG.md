@@ -1034,4 +1034,21 @@ Tails stay clean at every size (FINAL p99 ≤ 0.43, max ≤ 0.53 across all shap
 | 0.5M | **1/80** | 0.40–0.66 | 17–31 m | LOST(off-path) |
 | 0.1M | **0/80** | 0.27–0.31 | 18–31 m | LOST(off-path) |
 
-**Finding (real downscaling):** cutting the real data to **1/3 (0.5M) or even 1/15 (0.1M, 28 episodes)** leaves FINAL **completion untouched (500/500 all three)**, **progress essentially unchanged** (per-shape net laps within ~0.05 of full — e.g. pentagon 3.22→3.18→3.13, circle 2.70→2.52→2.50), and **cruise precision within noise** (circle 0.016→0.021→0.018; corners 0.09–0.11 like full; tails clean). The INIT still diverges either way and gets *marginally worse* with less data (1/80 → 0/80, laps 0.4–0.7 → 0.3), so data volume does not fix the pre-DAgger coverage hole — but DAgger fixes completion regardless. This is the "**DAgger, not initial-data volume, decides completion**" lesson made quantitative: **15× less real data → identical completion, progress, and precision.** Pipeline wall-clock ~63 min each. Runs: 0.5M init `…_djdp` / FINAL `…_qgjf`; 0.1M init `…_omxq` / FINAL `…_(0.1M d2)`.
+**Finding (real downscaling):** cutting the real data to **1/3 (0.5M) or even 1/15 (0.1M, 28 episodes)** leaves FINAL **completion untouched (500/500 all three)**, **progress essentially unchanged** (per-shape net laps within ~0.05 of full — e.g. pentagon 3.22→3.18→3.13, circle 2.70→2.52→2.50), and **cruise precision within noise** (circle 0.016→0.021→0.018; corners 0.09–0.11 like full; tails clean). The INIT still diverges either way and gets *marginally worse* with less data (1/80 → 0/80, laps 0.4–0.7 → 0.3), so data volume does not fix the pre-DAgger coverage hole — but DAgger fixes completion regardless. This is the "**DAgger, not initial-data volume, decides completion**" lesson made quantitative: **15× less real data → identical completion, progress, and precision.** Pipeline wall-clock ~63 min each. Runs: 0.5M init `…_djdp` / FINAL `08-12-26_01.15.29_qgjf`; 0.1M init `…_omxq` / FINAL `08-12-26_03.18.51_ynfe`.
+
+**(b) Generator-augmented downscaling (soft v2).** Can a generative model *substitute* for the missing real data? Train diffusion / GAN on the **shrunk** subset (0.5M or 0.1M), sample a **pure 1.5M-row** pool from that generator (24000 windows × 64, `--gen-offpath-frac -1.0`, no real rows in the mix — `build_mix --real-rows 0`), then run the same init 300k + DAgger×2 pipeline on the pure-generated data. This is a harder ask than §28 (which blended generated data into full real): here the generator is the *only* source of the initial distribution, and it was itself trained on as little as 0.1M real rows. FINAL eval identical protocol (50 seeds 500–549 × both + star).
+
+**FINAL — net laps mean (min) / traverse / dist mean (m), per shape × generator × source-size:**
+
+| shape | diff 0.5M | diff 0.1M | GAN 0.5M | GAN 0.1M |
+|---|---|---|---|---|
+| triangle | 2.64 (2.55) / 100 / 0.101 | _running_ | _running_ | _running_ |
+| square | 2.84 (2.70) / 100 / 0.116 | _running_ | _running_ | _running_ |
+| pentagon | 3.13 (3.02) / 100 / 0.106 | _running_ | _running_ | _running_ |
+| circle | 2.57 (2.47) / 100 / **0.012** | _running_ | _running_ | _running_ |
+| star *(untrained)* | 3.23 (2.95) / 100 / 0.132 | _running_ | _running_ | _running_ |
+| **TOTAL traverse** | **500/500** | _running_ | _running_ | _running_ |
+
+INIT (pre-DAgger, /80): diff 0.5M **0/80** (LOST, laps 0.29–0.37, dist 25–39m). Tails clean (FINAL p99 ≤ 0.45, max ≤ 0.51; circle p99 ≤ 0.05).
+
+**Finding so far (diff 0.5M pure-gen):** a diffusion generator trained on only **0.5M real rows**, sampled to a pure 1.5M pool with **zero real data in the training mix**, still reaches **FINAL 500/500** with progress and precision indistinguishable from real 0.5M (triangle 2.64/2.67, circle cruise even tighter at 0.012 vs 0.021) — the untrained star also generalizes 100/100. So the generated distribution carries enough on-path + recovery structure that DAgger closes the rest; a pure-synthetic initial dataset is a viable substitute. Remaining cells (diff 0.1M, GAN 0.5M/0.1M) running.
