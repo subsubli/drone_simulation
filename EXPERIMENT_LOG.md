@@ -682,6 +682,8 @@ Ran the §18/§21 downstream protocol on the x0pe-improved diffusion generator (
 
 ## 24. Attitude sanity-check — soft (all-real) policy roll/pitch is healthy, no sustained ringing (2026-08-10)
 
+**Why this section exists.** By §21–23 the policy *completes* shapes in sim (net-laps), but "completes in sim" is not "deployable on a real drone" — nothing had yet checked whether it does so with physically sane attitude, and the memory's standing open item is the real-hardware prerequisite. So before trusting the velocity-only controller off-sim, sanity-check the roll/pitch it actually produces. (This check is what started the whole §24→§27 thread: healthy-looking attitude here, then a ringing signature in §25 that turned out to co-occur with silent crashes, then the D-gain root cause in §27, then soft/hard v2.)
+
 Checked whether the reference soft (all-real) policy `runs_soft_all2/merged/…_uhsf` emits sane attitude under rollout (att_d_gain_scale=0.3, 100Hz control, both dirs). Measured **tilt** = angle between body-z and world-z (yaw-invariant, avoids euler gimbal artifacts), and FFT'd roll/pitch for ringing.
 
 **Tilt (per rollout, one sd.run per fresh process):**
@@ -922,7 +924,7 @@ All LOST; **the purer/cleaner the generator, the harder the pre-DAgger divergenc
 
 ## 29. hard v2 — heavy-kick data at D=1.0 is the first dataset whose recovery reaches the INIT policy (2026-08-11)
 
-The original hard dataset (6×1.5m kicks every episode, `data/merged1.5M.csv.gz`) was collected at att_d_gain_scale 0.3, where a hard kick tilts the drone past 90° into an unrecoverable inverted freeze (§27) — so its "recovery" data is ~60% frozen-inverted crashes. **hard v2** re-collects the identical recipe (same seeds) at **D=1.0**, where the drone actually recovers from those kicks. Question: does genuine recovery in the *initial* data reduce the pre-DAgger divergence that every other dataset suffers (§19/§21b/§27/§28)?
+**Why this section exists.** §16/§19 established the *coverage hole*: clean on-path data contains no "off-path → recover" samples, so a pre-DAgger init policy has no learned recovery and diverges. The original hard dataset (6×1.5m kicks every episode, `data/merged1.5M.csv.gz`) was built precisely to fill that hole — the kicks were supposed to manufacture recovery trajectories. But §27's root cause changes the reading of that data: at att_d_gain_scale 0.3 a hard kick tilts the drone past 90° into an unrecoverable inverted freeze, **not** a recovery — so the hard dataset's "recovery" content might actually be crash content. Re-measuring the original hard data here (for the first time — this crash fraction was never quantified before this conversation) confirms it: **~60% of its rows are frozen-inverted crashes**, not recoveries. That is the motivation for **hard v2**: re-collect the identical recipe (same seeds) at **D=1.0**, where the drone actually recovers from those same kicks, turning crash content into genuine recovery content. Question: does genuine recovery in the *initial* data finally reduce the pre-DAgger divergence that every other dataset suffers (§19/§21b/§27/§28)?
 
 **Data level — hard v2 is recovery-rich, not crash-rich.** Same seeds/kicks, only the gain changed:
 
@@ -978,9 +980,28 @@ A completing policy has **zero** bias on every axis (IQL FINAL: |mean| < 0.01 m,
 
 **Counterfactual — randomize the drone yaw (track byte-identical).** A throwaway copy of `shape_dataset.py` with `INIT_RPY` yaw drawn from the (seed-seeded) `rng` — placement draws happen before it and eval has no kicks, so for a given seed the trajectory is identical and only the drone heading changes. Drawn yaws were properly varied (89°, 153°, 223°, 261°, 319°, …). Result on IQL INIT: `pos_err_y` went **+4.07 → −3.61 ± 3.97 (frac>0 = 0.13)** — the bias did **not** wash out; it **flipped sign** and stayed just as consistent. So the heading causally sets the drift direction, but not by a clean rotation.
 
-**Why "flip" and not "wash out" — the mechanism (forward-pass heading sweep, no sim).** Feed the IQL INIT policy a fixed diverged state (3 m off-path, at rest) and sweep only the heading quaternion's yaw 0→360°:
-- The commanded velocity is **pinned at max_action (±1.4)** — `cmd_x` sits at −1.4. In divergence the MLP **ignores its inputs** (both `pos_err` direction and heading over most of the range) and **saturates toward a world-fixed quadrant (≈ −x·+y)**: for yaw 120–330° the output direction is a near-constant ≈ +135°, whether `pos_err` points +x or +y. This is a textbook **out-of-distribution MLP collapse** (inputs ignored, near-constant output).
-- But heading is **not fully ignored** — for yaw 0–90° the output swings wildly. So randomizing the heading doesn't scatter the drift to zero; it moves the saturation quadrant, which is why the world bias **flipped** rather than averaged out.
+**Why "flip" and not "wash out" — the mechanism, and what "OOD saturation" means (forward-pass heading sweep, no sim).** Feed the IQL INIT policy a single fixed diverged state — 3 m off-path along +x, at rest (vel = angvel = 0) — and sweep ONLY the heading quaternion's yaw from 0→330° in 30° steps. The commanded world-frame `target_vel` it returns (before the slew cap):
+
+| yaw° | cmd_x | cmd_y | cmd_z | dir° (atan2 y,x) |
+|---|---|---|---|---|
+| 0 | −1.40 | +0.65 | −0.31 | +155 |
+| 30 | −0.06 | −0.62 | +0.08 | −96 |
+| 60 | +1.27 | −1.08 | −0.47 | −40 |
+| 90 | +1.13 | −0.41 | −0.55 | −20 |
+| **120** | −0.90 | +0.36 | −0.49 | **+158** |
+| **150** | −1.33 | +0.99 | −0.45 | **+143** |
+| **180** | −1.38 | +1.27 | −0.60 | **+137** |
+| **210** | −1.39 | +1.34 | −1.03 | **+136** |
+| **240** | −1.39 | +1.18 | −1.25 | **+140** |
+| **270** | −1.38 | +0.98 | −1.26 | **+145** |
+| **300** | −1.35 | +1.18 | −1.24 | **+139** |
+| **330** | −1.06 | +1.29 | −1.26 | **+130** |
+
+Reading it:
+- **The command magnitude is pinned at the action bound (±1.4).** The policy's `MinMaxActionScaler` caps each axis at the data's action range (≈ ±1.4 m/s). In *normal* tracking the command also has |·| ≈ 1.4, but its DIRECTION follows the state (it points back toward the path). Here `cmd_x` sits at −1.06…−1.39 — railed against the −x bound — across most of the sweep. The output is **saturated (bound-railed), not modulated**.
+- **Over yaw 120–330° (8 of 12 samples) the direction is a near-constant ≈ +135°** (world −x·+y quadrant, bold rows) and barely moves as yaw changes — AND it is the *same* quadrant whether `pos_err` points +x or +y (the +y-offset sweep, not shown, also lands at +135…+149°). So in deep OOD the MLP **ignores both of its main inputs** (the heading *and* the off-path direction) and emits a **near-constant, bound-railed command toward one fixed world direction**. That is precisely what "OOD saturation" means here: far outside the training manifold the network stops behaving as a function of its inputs and collapses onto a corner of its output range — a textbook out-of-distribution MLP failure (the input→output Jacobian effectively goes to zero; the ReLU/tanh stack is pinned).
+- **This is self-reinforcing — which is *why it is divergence*, not a static offset.** A max-speed command toward a fixed world direction pushes the drone further off-path → the state goes further OOD → the command stays railed toward the same corner → the drone keeps accelerating away. The saturation feeds itself; that positive feedback is exactly the LOST / blow-up behaviour (dist 4–40 m), not a bounded lean. (Reward-clip and slew-cap keep it from going numerically infinite, but they don't restore input-sensitivity.)
+- **Heading is not *entirely* ignored** — over yaw 0–90° (4 samples) the output swings wildly (−96° … +155°, and `cmd_x` even flips sign at yaw 30–90°). So the saturation quadrant is a *mostly-flat but partly-heading-dependent* function of the world-fixed heading. Randomizing `INIT_RPY` yaw therefore does **not** scatter the drift to zero (a truly heading-invariant saturation would average out over uniform yaw) — instead it **moves the saturation quadrant to a different corner**, which is exactly why the measured world bias **flipped sign** (+4.07 → −3.61) rather than washing to ~0.
 
 **Conclusion.** The −y drift is: *a diverged policy saturates its command toward a world-fixed direction (OOD MLP collapse), and the tiny asymmetries that pin that direction to a particular quadrant are the world-fixed drone heading (`INIT_RPY` yaw=0), the quadrotor's propeller CW/CCW layout, and gravity (z).* It is therefore a **symptom of divergence**, and it explains every observation coherently: completing policies never go OOD, so they never saturate → bias = 0 (IQL FINAL, ±0.008 m); different algorithms share the −y quadrant because the pinning asymmetries are common, not learned; randomizing the heading moves the quadrant (sign flip); and the more deeply a model diverges, the harder it saturates (the DAgger-worsened variant: frac 0.93, `ez` −12…−22 m).
 
