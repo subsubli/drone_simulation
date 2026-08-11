@@ -20,3 +20,7 @@ dataset_1M/
 .idea/
 .vscode/
 
+# CQL probe (d3rlpy) — local-only, not part of the offline-RL/IQL project deliverables
+drone_stacked_training_code/
+**/_cql_*.py
+
