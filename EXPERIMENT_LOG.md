@@ -847,7 +847,16 @@ Parallel to §27 (soft v2 all-real), the **generator-augmented** comparison at D
 | cc_v2 (diffusion) | 0.0243 | 0.027 | 0.047 | 0.072 | 0.13 | 0.00% |
 | gan_v2 (GAN λ=10) | 0.0113 | 0.012 | 0.018 | 0.025 | 0.14 | 0.00% |
 
-Same ordering as §22: the GAN bulk (11mm) is **tighter than real** (13mm), diffusion (24mm) looser. Both pools are **0% off-path** — v2 real is already only 0.13% off-path, so the class-conditional off-path branch had almost nothing to reproduce (a direct consequence of D=1.0's fast recovery, §27).
+Same ordering as §22: the GAN bulk (11mm) is **tighter than real** (13mm), diffusion (24mm) looser. **Both pools are generated at the natural ratio (`--gen-offpath-frac -1.0`), which for v2 means ~0% off-path** — v2 real is already only 0.13% off-path (D=1.0's fast recovery leaves almost no off-path dwell, §27), so the class-conditional off-path branch trained on just **160 windows** (0.3% of 46,301).
+
+**Measured: the off-path branch has collapsed** — forcing pure off-path generation (`--gen-offpath-frac 1.0`, 2000 windows each) produces no real excursions at all:
+
+| forced off-path pool | median | p90 | p99 | max | off-path (>0.2m) |
+|---|---|---|---|---|---|
+| cc_v2 (diffusion) | 0.073 | 0.107 | 0.126 | 0.14 | 0.00% |
+| gan_v2 (GAN) | 0.119 | 0.137 | 0.138 | 0.14 | 0.00% |
+
+Even when *told* to generate off-path, both branches stay **below the 0.2m threshold** (0% off-path), and the GAN collapses to a razor-thin 0.137–0.14m band (p90≈p99≈max). So the v2 generators **cannot synthesize recovery data** — 160 training windows is far below even §20c's already-collapsing 3228, exactly as that data-scarcity result predicted. This is why the pools are on-path-only and it is the correct choice: forcing off-path would inject a degenerate ~0.13m cluster, not real recovery. **In the v2 setup, recovery coverage comes from hard v2 (32% genuine excursions, §29) and DAgger — not from the generators, which serve on-path precision only.**
 
 **(b) FINAL — circle (pure-precision probe), full stats (50 seeds 500–549 × both dirs):**
 
