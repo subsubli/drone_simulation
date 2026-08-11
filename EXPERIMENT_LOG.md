@@ -882,7 +882,19 @@ Even when *told* to generate off-path, both branches stay **below the 0.2m thres
 | real0.5+gan1.0 | 0.106 (0.458) | 0.124 (0.466) | 0.114 (0.431) | 0.151 (0.450) |
 | **gan1.5 pure** | **0.088 (0.404)** | **0.101 (0.413)** | **0.091 (0.383)** | **0.130 (0.408)** |
 
-Every dataset: all 5 shapes 100/100 (**500/500** incl. untrained star), laps 2.4–3.3 with min ≥ 2.30 (no near-misses), corner max ≤ 0.60m, circle max ≤ 0.33m — **no blow-ups anywhere**.
+**(c2) FINAL — corners + star, completion + progress: laps mean (min) / trav:**
+
+| dataset | triangle | square | pentagon | star |
+|---|---|---|---|---|
+| soft v2 | 2.68 (2.63) / 100 | 2.91 (2.72) / 100 | 3.22 (3.00) / 100 | 3.25 (2.94) / 100 |
+| real1.0+cc0.5 | 2.67 (2.57) / 100 | 2.91 (2.77) / 100 | 3.21 (3.03) / 100 | 3.31 (2.97) / 100 |
+| real0.5+cc1.0 | 2.66 (2.59) / 100 | 2.88 (2.73) / 100 | 3.17 (2.93) / 100 | 3.31 (2.89) / 100 |
+| cc1.5 pure | 2.66 (2.58) / 100 | 2.87 (2.75) / 100 | 3.17 (3.01) / 100 | 3.27 (2.92) / 100 |
+| real1.0+gan0.5 | 2.63 (2.46) / 100 | 2.88 (2.64) / 100 | 3.17 (2.95) / 100 | 3.27 (2.89) / 100 |
+| real0.5+gan1.0 | 2.66 (2.55) / 100 | 2.90 (2.74) / 100 | 3.21 (3.01) / 100 | 3.27 (2.82) / 100 |
+| gan1.5 pure | 2.63 (2.52) / 100 | 2.88 (2.75) / 100 | 3.17 (3.02) / 100 | 3.22 (2.93) / 100 |
+
+(circle laps/trav are in table (b).) Every dataset: all 5 shapes **100/100** (**500/500** incl. untrained star), laps 2.4–3.3 with min ≥ 2.30 (no near-misses), corner max ≤ 0.60m, circle max ≤ 0.33m — **no blow-ups anywhere**.
 
 **(d) INIT-only (no DAgger, D=1.0) — per-shape divergence, dist mean / max (m):**
 
