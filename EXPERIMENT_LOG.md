@@ -834,3 +834,26 @@ The give-away is *best-after-peak* — the closest the drone gets back after its
 **INIT-only (no DAgger, D=1.0):** 5/80 traverse (circle 5/20, one COMPLETES; tri/sq/pent 0/20), dist 3–12m, LOST. Worse than v1's §16 init (24/80, <1m) — but confounded: v1 init was eval'd at the sluggish D=0.3 (drifts slowly, stays <1m), v2 at the responsive D=1.0 (faithfully executes the *untrained* init policy's bad commands → diverges further). Consistent with the gain finding: D=1.0 recovers *correct* (pure-pursuit) commands but amplifies *wrong* (raw-init-policy) ones. DAgger then washes this out.
 
 **Verdict:** v2 trades a modest cruise-precision loss (circle 7→16mm, corners ~5%) for **equal-or-better completion (star 98→100/100, 500/500 total), clean tails (no blow-ups), and — the real prize — a controller that physically recovers from disturbances.** The sim completion was already saturated; v2's value is **deployability**: it directly addresses the memory's open real-hardware prereq (attitude-gain retune for velocity-only mode). Runs: init `runs/merged/…_hgbf`, d1 `runs/d1_merged/…_rykf`, FINAL `runs/d2_merged/08-11-26_01.01.10_vxno`.
+
+## 28. Generator augmentation at D=1.0 — diffusion & GAN retrained on soft v2, all 6 mixes complete 500/500 (2026-08-11)
+
+Parallel to §27 (soft v2 all-real), the **generator-augmented** comparison at D=1.0. Retrained the class-conditional diffusion (cc, asinh0.05, cfg1.5, offpath-batch 0.5, 50k) and GAN (λ_smooth=10, R3GAN r1/r2=1.0, sn, 50k) **on the soft v2 data**, resampled 24k-window pools, built the §18/§21 three-ratio mixes (real1.0+X0.5 / real0.5+X1.0 / X1.5-pure) against **v2 real**, and ran each through the D=1.0 pipeline (init 300k + DAgger×2 + INIT/FINAL eval, all att_d_gain_scale=1.0). Note: v2 data is only **0.3% off-path** (vs v1's 7%) — D=1.0 recovers kicks so fast the drone barely dwells off-path, so the generators' off-path branch trains on very few windows; GAN peaked early (best step 2000, killed at 18k since 16k steps gave no improvement).
+
+**FINAL (DAgger×2, 50-seed 500–549 × both dirs + untrained star), all at D=1.0. `soft v2` = §27 all-real reference:**
+
+| dataset | TOTAL trav | circle dist | tri / sq / pent | star dist | INIT (no DAgger) |
+|---|---|---|---|---|---|
+| soft v2 (all-real ref) | 500/500 | 0.016 | 0.110 / 0.124 / 0.117 | 0.148 | 0/80 |
+| real1.0+cc0.5 | 500/500 | 0.017 | 0.113 / 0.132 / 0.125 | 0.157 | 0/80 |
+| real0.5+cc1.0 | 500/500 | 0.029 | 0.116 / 0.132 / 0.123 | 0.153 | 0/80 |
+| cc1.5 (pure diffusion) | 500/500 | 0.023 | 0.107 / 0.126 / 0.118 | 0.150 | 0/80 |
+| real1.0+gan0.5 | 500/500 | 0.020 | 0.104 / 0.118 / 0.113 | 0.152 | 1/80 |
+| real0.5+gan1.0 | 500/500 | 0.020 | 0.106 / 0.124 / 0.114 | 0.151 | 3/80 |
+| **gan1.5 (pure GAN)** | **500/500** | **0.015** | **0.088 / 0.101 / 0.091** | **0.130** | 0/80 |
+
+**Three findings:**
+1. **Every mix completes 500/500 — the D=1.0 controller ERASES the §21 blend-instability.** In v1 (D=0.3), real1.0+GAN0.5 was the unstable point (374/400, held-out blow-ups across all shapes) and the 50/50 diffusion blend also blew up (§18, 377/400). Here at D=1.0 **all six are a perfect 500/500, including both real-heavy blends and all three pure generators**, with clean tails (p99 ≤ 0.14, no blow-ups). The §21 instability was the controller losing control on the held-out excursions; D=1.0 recovers them, so the distribution-conflict that caused blow-ups no longer diverges.
+2. **Pure GAN is the most precise policy — cleaner-than-real data still wins at D=1.0.** gan1.5 gives the tightest tracking on **every** shape: circle 0.015 (beats the all-real soft v2's 0.016) and corners 0.088/0.101/0.091 — ~20% tighter than soft v2 (0.110/0.124/0.117) and tighter than all cc mixes. The λ=10 smoothness + tighter-than-real bulk transfers to the policy, reproducing the §21 result (GAN's ultra-precise data → most precise augmented policy) — and it holds even though the v2 GAN's own on-path median (11mm) was looser than v1's (3mm, because D=1.0 cruise is rougher). Diffusion (cc) mixes are looser (circle 0.017–0.029), same bulk-width ordering as §18 (diffusion > GAN).
+3. **INIT still diverges everywhere (0–3/80 LOST), gen-heavy worst** (real0.5+gan1.0 = 3/80 but up to 24m divergence; preserved in `EXPERIMENT_genv2_INIT_preserve.txt`). The coverage hole is untouched by the controller fix — DAgger remains mandatory regardless of generator or gain, consistent with §19/§21b.
+
+**Verdict:** At the deployable D=1.0 gain, generator augmentation is strictly safe on completion (all 500/500, instability gone) and **pure GAN yields the project's most precise policy yet on corners** while matching all-real on circle. The recovery-capable controller converts the §21 "blend is unstable" caveat into a non-issue. Generators trained on v2: `diffusion/gen_traj_cc_v2`, `gan/gen_gan_cc_v2` (best step 2000). Mix final policies under `mix_v2_*/final_run.txt`.
