@@ -944,4 +944,15 @@ The gain flip turns hard v1's 79%-off-path/60%-crashed into hard v2's **32% off-
 
 hard v2's init policy is the **first D=1.0 policy that does not catastrophically diverge**: divergence stays ~1m (vs 3–24m for every other D=1.0 dataset), triangle/square read **SLOW(advancing)** (tracking, just slow) rather than LOST, and 10/80 complete. The 32% recovery data directly taught the init policy "off-path → return," so the closed loop drifts and *recovers* instead of flying off. This is the first data-level dent in the coverage hole (§16/§19) — not a full fix (most shapes still don't complete pre-DAgger), but a clear divergence→bounded-advancing transition. (Note: soft v1's 24/80 init was higher but eval'd at the sluggish D=0.3, which mechanically caps divergence regardless of data; among D=1.0 datasets — the fair, deployable comparison — hard v2 is decisively best.)
 
-**FINAL (DAgger×2) — running; results appended below when complete.**
+**FINAL (DAgger×2, 50 seeds 500–549 × both dirs + untrained star, D=1.0) — full per-shape:**
+
+| shape | laps (min) | trav | dist mean±std | p90 | p99 | max |
+|---|---|---|---|---|---|---|
+| triangle | 2.64 (2.51) | 100/100 | 0.117±0.011 | 0.324 | 0.457 | 0.602 |
+| square | 2.87 (2.65) | 100/100 | 0.129±0.013 | 0.333 | 0.463 | 0.616 |
+| pentagon | 3.16 (2.94) | 100/100 | 0.123±0.016 | 0.304 | 0.442 | 0.695 |
+| circle | 2.61 (2.41) | 100/100 | 0.033±0.006 | 0.065 | 0.124 | 0.266 |
+| star (untrained) | 3.24 (2.85) | 100/100 | 0.155±0.013 | 0.344 | 0.460 | 0.640 |
+| **TOTAL** | | **500/500** | | | | |
+
+**After DAgger, hard v2 completes 500/500 like every D=1.0 dataset — but its cruise precision is the loosest**: circle **0.033** vs soft v2's 0.016 (§27) and pure GAN's 0.015 (§28), corners 0.12–0.13 (comparable), tails still clean (p99 ≤ 0.46, max ≤ 0.70, no blow-ups). The 32% recovery-excursion content is noisier than clean on-path data, so the policy trades ~2× cruise precision on the circle. **The tradeoff is now explicit: hard v2 buys pre-DAgger INIT robustness (bounded ~1m, 10/80 — the coverage-hole dent above) at the cost of post-DAgger cruise precision; pure GAN (§28) buys the opposite (best FINAL precision, worst INIT). DAgger equalizes completion (all 500/500) but not precision or init-robustness — those are set by the data.** Runs: init `runs/merged/…_hryq`, FINAL `runs/d2_merged/08-11-26_11.30.30_gdre`.
