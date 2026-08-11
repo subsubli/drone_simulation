@@ -8,6 +8,7 @@
 *.zip
 *.npz
 *.log
+*.txt
 policy_paths.png
 
 IQL-PyTorch-main/runs/
@@ -18,3 +19,4 @@ dataset_1M/
 *.egg-info/
 .idea/
 .vscode/
+
