@@ -1065,4 +1065,38 @@ INIT (pre-DAgger, /80): **all four 0/80** (LOST; laps 0.1–0.3, mean dist singl
 | GAN 100k | 0.0083 | 0.016 | 0.027 | 0.07 | **0.00%** |
 | GAN 500k | 0.0049 | **0.006** | 0.020 | 0.14 | **0.00%** |
 
-Reading this: (1) **every generator emits 0.00% off-path** — none synthesizes recovery data, vs real's 0.13% tail out to 0.42 m. This is the *direct* cause of the universal INIT 0/80 above: a pure-generated initial set has **zero recovery coverage**, so the pre-DAgger policy diverges on its first excursion; DAgger then supplies the recovery states. (2) **GAN collapses tighter than real**; GAN 500k is a razor-thin band (p90 0.006 ≈ median 0.005 — near mode-collapse, the pe_jerk-best checkpoint it was early-stopped on), GAN 100k also tight (0.008), whereas diffusion sits looser and closer to the real bulk (0.016–0.024). (3) **No generator reproduces the real recovery tail** (real p99 0.165 / max 0.42; all pools p99 ≤ 0.07 / max ≤ 0.14) — soft v2's 0.13% off-path (≈160 windows) is too sparse to learn (§17/§27). So the generators are *on-path-precision engines only*; whether a generator can carry the recovery tail is exactly what hard v2 (32% off-path) tests in (c).
+Reading this: (1) **every generator emits 0.00% off-path** — none synthesizes recovery data, vs real's 0.13% tail out to 0.42 m. This is the *direct* cause of the universal INIT 0/80 above: a pure-generated initial set has **zero recovery coverage**, so the pre-DAgger policy diverges on its first excursion; DAgger then supplies the recovery states. (2) **GAN collapses tighter than real**; GAN 500k is a razor-thin band (p90 0.006 ≈ median 0.005 — near mode-collapse, the pe_jerk-best checkpoint it was early-stopped on), GAN 100k also tight (0.008), whereas diffusion sits looser and closer to the real bulk (0.016–0.024). (3) **No generator reproduces the real recovery tail** (real p99 0.165 / max 0.42; all pools p99 ≤ 0.07 / max ≤ 0.14) — soft v2's 0.13% off-path (≈160 windows) is too sparse to learn (§17/§27). So the generators are *on-path-precision engines only*; whether a generator can carry the recovery tail is exactly what hard v2 (32% off-path) tests in §32.
+
+## 32. Hard v2 generators — can a generator carry the recovery tail? (init+DAgger, 2026-08-13)
+
+**Why this section exists.** §31(b) showed soft v2 generators emit **0% off-path** — the cc off-path branch has nothing to learn (160 windows, §17/§27) and collapses (§17: off-path mode is a narrow ~1 m spike, median 0.99/max 1.04, not the real continuous 0.2–5 m tail). Hard v2 is the opposite regime — **46.4% of windows off-path (32.7% of rows)**, oversampled to 50% per batch — so the same class-conditional generator (`class_cond=True`, `--offpath-batch-frac 0.5`) finally has a data-rich off-path signal. This section asks the question §31(b) couldn't: **can a generator reproduce the recovery tail when the training data actually contains it?** Train diffusion / GAN on the **full 1.5M hard v2**, sample a pure pool at natural ratio (`--gen-offpath-frac -1.0`), same init 300k + DAgger×2 pipeline.
+
+**Generator-output distribution — |pos_err| over the 24000-window pool:**
+
+| pool | median | p90 | p99 | max | off-path (>0.2 m) |
+|---|---|---|---|---|---|
+| real hard v2 | 0.0660 | 0.776 | 2.240 | 19.73 | **32.30%** |
+| hard **diff** pool | 0.0543 | 0.620 | 1.532 | 2.97 | **29.59%** |
+| hard **GAN** pool | _running_ | | | | _running_ |
+
+**Finding (§32, diffusion) — the recovery tail IS learnable when the data carries it.** Unlike soft (0.00% off-path), the hard-v2 diffusion pool emits **29.59% off-path**, within a few points of real's 32.30%, and — decisively — as a **continuous spectrum, not the §17 spike**: median 0.054 → p90 0.62 → p99 1.53 → max 2.97, spread across the whole 0.2–3 m recovery range. So the §17 cc off-path collapse was a *data-scarcity* artifact, not a model limit: **with off-path-rich data the class-conditional off-path branch spreads into the real recovery distribution — achieved by data richness alone, no minibatch-stddev / mode-collapse fix needed** (a lever still open for the GAN). The one gap is the extreme catastrophic tail (real max 19.73 m divergence states) which diffusion caps at ~3 m — the recovery-relevant band (0.2–3 m) is reproduced, the rare blow-up states are not.
+
+**Downstream FINAL — net laps mean (min) / traverse / dist mean / p99 (m):**
+
+| shape | hard **diff** | hard **GAN** |
+|---|---|---|
+| triangle | 2.63 (2.49) / 100 / 0.108 / 0.458 | _running_ |
+| square | 2.86 (2.73) / 100 / 0.123 / 0.452 | _running_ |
+| pentagon | 3.13 (2.93) / 100 / 0.116 / 0.432 | _running_ |
+| circle | 2.46 (2.36) / 100 / 0.041 / 0.192 | _running_ |
+| star *(untrained)* | 3.23 (2.78) / 100 / 0.151 / 0.445 | _running_ |
+| **TOTAL traverse** | **500/500** | _running_ |
+
+**Finding (§32, downstream) — the recovery content shows up as a *milder INIT*, and it still completes.** hard-diff FINAL is 500/500 like every soft generator (DAgger closes it either way), but the pre-DAgger **INIT diverges far less catastrophically** than any soft-generated INIT — the direct payoff of the pool carrying real off-path:
+
+| INIT (pre-DAgger, /80) | net laps | dist mean | dist max | traverse |
+|---|---|---|---|---|
+| soft generators (b) | 0.13–0.34 | single-digit m | **50–80 m** | 0/80 |
+| **hard diff (§32)** | **0.50–0.78** | **1.3–2.3 m** | **7–39 m** | 0/80 |
+
+Still 0/80 (an on-path+partial-recovery generator alone doesn't complete laps), but the drone no longer flies off to 50–80 m — it stays within a few m and partially recovers, exactly because the generated pool now contains the recovery states soft's could not. The precision cost is visible and expected: **circle cruise loosens to 0.041** (vs soft diff 0.010–0.016) with p99 0.192 — learning the off-path tail trades a little on-path sharpness. hard **GAN** pool + downstream _running_.
