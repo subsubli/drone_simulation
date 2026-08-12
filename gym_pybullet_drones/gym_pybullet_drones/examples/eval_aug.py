@@ -57,7 +57,10 @@ def main():
     ap.add_argument('--label', default=None)
     ap.add_argument('--att-d-gain-scale', type=float, default=0.3,
                     help='attitude D-gain scale for rollout controller (default 0.3; use 1.0 for soft-v2 policies)')
+    ap.add_argument('--direction', default='both', choices=['both', 'cw', 'ccw'],
+                    help="rollout traversal direction (default both = CCW+CW; use cw/ccw for single-direction policies)")
     A = ap.parse_args()
+    DIRS = {'both': (False, True), 'ccw': (False,), 'cw': (True,)}[A.direction]
     cfg = json.load(open(os.path.join(A.run_dir, 'config.json')))
     include_la = bool(cfg.get('include_lookahead'))
     mean, std, ab = load_normalization(A.run_dir)
@@ -65,14 +68,14 @@ def main():
     out = f'/tmp/evalaug_{os.getpid()}'
     os.makedirs(os.path.join(out, 'shape_dataset'), exist_ok=True)
 
-    print(f"# eval {A.label or os.path.basename(A.run_dir.rstrip('/'))}  seeds {A.seeds[0]}-{A.seeds[-1]} x both dirs")
+    print(f"# eval {A.label or os.path.basename(A.run_dir.rstrip('/'))}  seeds {A.seeds[0]}-{A.seeds[-1]} x {A.direction} dir(s)")
     print(f"{'shape':10} {'laps mean±std':>16} {'min':>5} {'trav':>6} {'dist mean±std':>16} "
           f"{'p90':>6} {'p99':>6} {'max':>7}")
     summary = {}
     for shape in A.shapes:
         laps, dists, pe_pool = [], [], []
         for seed in A.seeds:
-            for cw in (False, True):
+            for cw in DIRS:
                 l, cov, derr, pen = rollout(shape, seed, cw, policy, mean, std, include_la, out, A.att_d_gain_scale)
                 laps.append(l); dists.append(derr); pe_pool.append(pen)
         laps, dists = np.array(laps), np.array(dists)

@@ -1077,7 +1077,7 @@ Reading this: (1) **every generator emits 0.00% off-path** — none synthesizes 
 |---|---|---|---|---|---|
 | real hard v2 | 0.0660 | 0.776 | 2.240 | 19.73 | **32.30%** |
 | hard **diff** pool | 0.0543 | 0.620 | 1.532 | 2.97 | **29.59%** |
-| hard **GAN** pool | _running_ | | | | _running_ |
+| hard **GAN** pool | 0.0805 | 0.824 | 1.519 | 3.30 | **38.38%** |
 
 **Finding (§32, diffusion) — the recovery tail IS learnable when the data carries it.** Unlike soft (0.00% off-path), the hard-v2 diffusion pool emits **29.59% off-path**, within a few points of real's 32.30%, and — decisively — as a **continuous spectrum, not the §17 spike**: median 0.054 → p90 0.62 → p99 1.53 → max 2.97, spread across the whole 0.2–3 m recovery range. So the §17 cc off-path collapse was a *data-scarcity* artifact, not a model limit: **with off-path-rich data the class-conditional off-path branch spreads into the real recovery distribution — achieved by data richness alone, no minibatch-stddev / mode-collapse fix needed** (a lever still open for the GAN). The one gap is the extreme catastrophic tail (real max 19.73 m divergence states) which diffusion caps at ~3 m — the recovery-relevant band (0.2–3 m) is reproduced, the rare blow-up states are not.
 
@@ -1085,18 +1085,21 @@ Reading this: (1) **every generator emits 0.00% off-path** — none synthesizes 
 
 | shape | hard **diff** | hard **GAN** |
 |---|---|---|
-| triangle | 2.63 (2.49) / 100 / 0.108 / 0.458 | _running_ |
-| square | 2.86 (2.73) / 100 / 0.123 / 0.452 | _running_ |
-| pentagon | 3.13 (2.93) / 100 / 0.116 / 0.432 | _running_ |
-| circle | 2.46 (2.36) / 100 / 0.041 / 0.192 | _running_ |
-| star *(untrained)* | 3.23 (2.78) / 100 / 0.151 / 0.445 | _running_ |
-| **TOTAL traverse** | **500/500** | _running_ |
+| triangle | 2.63 (2.49) / 100 / 0.108 / 0.458 | 2.55 (2.39) / 100 / 0.122 / 0.466 |
+| square | 2.86 (2.73) / 100 / 0.123 / 0.452 | 2.77 (2.52) / 100 / 0.134 / 0.459 |
+| pentagon | 3.13 (2.93) / 100 / 0.116 / 0.432 | 3.05 (2.83) / 100 / 0.127 / 0.444 |
+| circle | 2.46 (2.36) / 100 / 0.041 / 0.192 | 2.37 (2.26) / 100 / 0.062 / 0.241 |
+| star *(untrained)* | 3.23 (2.78) / 100 / 0.151 / 0.445 | 3.14 (0.57) / **98** / 0.154 / 0.445 |
+| **TOTAL traverse** | **500/500** | **498/500** |
 
 **Finding (§32, downstream) — the recovery content shows up as a *milder INIT*, and it still completes.** hard-diff FINAL is 500/500 like every soft generator (DAgger closes it either way), but the pre-DAgger **INIT diverges far less catastrophically** than any soft-generated INIT — the direct payoff of the pool carrying real off-path:
 
 | INIT (pre-DAgger, /80) | net laps | dist mean | dist max | traverse |
 |---|---|---|---|---|
 | soft generators (b) | 0.13–0.34 | single-digit m | **50–80 m** | 0/80 |
-| **hard diff (§32)** | **0.50–0.78** | **1.3–2.3 m** | **7–39 m** | 0/80 |
+| hard diff (§32) | 0.50–0.78 | 1.3–2.3 m | 7–39 m | 0/80 |
+| **hard GAN (§32)** | **1.14–1.57** | **0.27–1.8 m** | **1.9–60 m** | **4/80** |
 
-Still 0/80 (an on-path+partial-recovery generator alone doesn't complete laps), but the drone no longer flies off to 50–80 m — it stays within a few m and partially recovers, exactly because the generated pool now contains the recovery states soft's could not. The precision cost is visible and expected: **circle cruise loosens to 0.041** (vs soft diff 0.010–0.016) with p99 0.192 — learning the off-path tail trades a little on-path sharpness. hard **GAN** pool + downstream _running_.
+The off-path richness of the pool maps **monotonically** onto INIT quality: soft (0% off-path) flies off to 50–80 m and never completes; hard diff (29.59%) stays within 7–39 m; **hard GAN (38.38% — the most recovery-rich pool of all, even above real's 32%) is the first generator whose pre-DAgger policy actually completes laps (4/80, net laps up to 1.57, most shapes' mean dist sub-1 m).** This is the clean confirmation of the §32 hypothesis *and* of the "more recovery data → less INIT divergence" gradient raised earlier: a pure-generated initial set can carry enough recovery structure to nearly stand on its own before any DAgger. Both hard generators still complete after DAgger (diff 500/500, **GAN 498/500** — GAN's only slip is star 98/100, its untrained-shape generalization), at a small on-path precision cost (circle cruise 0.041 diff / 0.062 GAN vs soft diff 0.010–0.016) — learning the off-path tail trades a little on-path sharpness.
+
+**Finding (§32, generators) — the recovery tail is learnable by *both* diffusion and GAN when the data carries it; no mode-collapse fix (mbstd) needed.** The §17 cc off-path collapse (soft: a ~1 m spike) was purely data-scarcity: on hard v2's 46% off-path windows, **both** generators reproduce a *continuous* recovery spectrum matching real — diffusion 29.59% off-path (median 0.054 → p99 1.53 → max 2.97), GAN **38.38%** (median 0.081 → p99 1.52 → max 3.30). Notably the GAN, which mode-collapsed to a razor-thin band on the small soft subsets (§31b, GAN 500k p90 0.006), here spreads *wider than real* — confirming the earlier prediction that a **big + broad target regularizes the adversarial game on its own** (the hard GAN trained near-monotonically, and its best checkpoint was grabbed at step 28000 right before a late divergence). Neither generator reproduces real's extreme catastrophic tail (real max 19.73 m; diff 2.97, GAN 3.30) — the recovery-relevant 0.2–3 m band is captured, the rare blow-up states are not.
