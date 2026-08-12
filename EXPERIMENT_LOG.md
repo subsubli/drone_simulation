@@ -1054,3 +1054,15 @@ Tails stay clean at every size (max ≤ 0.53 across all shapes) — no blow-ups.
 INIT (pre-DAgger, /80): **all four 0/80** (LOST; laps 0.1–0.3, mean dist single-digit m but p99 52–83 m — high-variance divergence). Tails clean at FINAL (max ≤ 0.58; circle p99 ≤ 0.072). *(GAN 500k was early-stopped at step 12000 — its pe_jerk-best checkpoint — yet still completes 500/500.)*
 
 **Finding (b) — all four generator×size cells reach FINAL 500/500.** A pure-synthetic initial dataset (1.5M rows, **zero real data in the mix**) trained on as little as **100k balanced real rows** substitutes for real data completely: every generator×size completes 500/500 incl. the untrained star, with progress matched to the real baseline (a). **Generator source size barely matters** — diffusion 100k↔500k are within ~0.01 laps on every shape. **Diffusion vs GAN split, as in §22/§27:** GAN corners are *tighter than real* (100k: 0.087/0.096/0.086 vs diffusion 0.101/0.114/0.107) while GAN 500k corners run looser (0.115/0.135/0.123); diffusion holds the best circle cruise (0.010–0.016). All INITs still diverge 0/80 (the on-path-only generators carry no recovery — off-path≈0 in soft v2, §17/§27), and DAgger closes it every time. Net: **the recipe needs neither much real data nor real data at all for the initial set — DAgger decides completion.** Hard v2 generators (which *do* carry off-path) in (c).
+
+**Generator-output distribution — what each model actually emits** (|pos_err| over the 24000-window pool, same 0.2 m off-path threshold as tables 7/13/14):
+
+| pool | median | p90 | p99 | max | off-path (>0.2 m) |
+|---|---|---|---|---|---|
+| real soft v2 | 0.0128 | 0.072 | 0.165 | 0.42 | **0.13%** |
+| diff 100k | 0.0160 | 0.037 | 0.064 | 0.12 | **0.00%** |
+| diff 500k | 0.0235 | 0.045 | 0.070 | 0.13 | **0.00%** |
+| GAN 100k | 0.0083 | 0.016 | 0.027 | 0.07 | **0.00%** |
+| GAN 500k | 0.0049 | **0.006** | 0.020 | 0.14 | **0.00%** |
+
+Reading this: (1) **every generator emits 0.00% off-path** — none synthesizes recovery data, vs real's 0.13% tail out to 0.42 m. This is the *direct* cause of the universal INIT 0/80 above: a pure-generated initial set has **zero recovery coverage**, so the pre-DAgger policy diverges on its first excursion; DAgger then supplies the recovery states. (2) **GAN collapses tighter than real**; GAN 500k is a razor-thin band (p90 0.006 ≈ median 0.005 — near mode-collapse, the pe_jerk-best checkpoint it was early-stopped on), GAN 100k also tight (0.008), whereas diffusion sits looser and closer to the real bulk (0.016–0.024). (3) **No generator reproduces the real recovery tail** (real p99 0.165 / max 0.42; all pools p99 ≤ 0.07 / max ≤ 0.14) — soft v2's 0.13% off-path (≈160 windows) is too sparse to learn (§17/§27). So the generators are *on-path-precision engines only*; whether a generator can carry the recovery tail is exactly what hard v2 (32% off-path) tests in (c).
