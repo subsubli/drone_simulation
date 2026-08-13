@@ -33,6 +33,11 @@ class Squeeze(nn.Module):
         return x.squeeze(dim=self.dim)
 
 
+# Set from main.py (like DEFAULT_DEVICE). When True, every mlp() built for Q/V/policy gets a
+# LayerNorm after each hidden Linear (standard offline-RL anti-OOD-divergence trick, §34e).
+USE_LAYERNORM = False
+
+
 def mlp(dims, activation=nn.ReLU, output_activation=None, squeeze_output=False):
     n_dims = len(dims)
     assert n_dims >= 2, 'MLP requires at least two dims (input and output)'
@@ -40,6 +45,8 @@ def mlp(dims, activation=nn.ReLU, output_activation=None, squeeze_output=False):
     layers = []
     for i in range(n_dims - 2):
         layers.append(nn.Linear(dims[i], dims[i+1]))
+        if USE_LAYERNORM:
+            layers.append(nn.LayerNorm(dims[i+1]))
         layers.append(activation())
     layers.append(nn.Linear(dims[-2], dims[-1]))
     if output_activation is not None:

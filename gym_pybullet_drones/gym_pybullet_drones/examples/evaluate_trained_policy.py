@@ -34,6 +34,9 @@ def load_policy(run_dir, max_action):
     with open(os.path.join(run_dir, 'config.json')) as f:
         cfg = json.load(f)
     hidden_dim, n_hidden = cfg['hidden_dim'], cfg['n_hidden']
+    #### must match training: LayerNorm changes the state_dict keys, so rebuild the same way.
+    import src.util as _u
+    _u.USE_LAYERNORM = bool(cfg.get('layernorm', False))
     #### state dim grows by 3 per enabled extra feature (lookahead lx/ly/lz, prev-action).
     state_dim = STATE_DIM + (3 if cfg.get('include_lookahead') else 0) \
                           + (ACTION_DIM if cfg.get('include_prev_action') else 0)

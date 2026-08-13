@@ -43,8 +43,9 @@ def main(args):
     #### /batch way up. GPU (cuda) ignores CPU threads.
     if args.device != 'auto':
         src.util.DEFAULT_DEVICE = torch.device(args.device)
+    src.util.USE_LAYERNORM = args.layernorm
     torch.set_num_threads(max(1, args.threads))
-    print(f'[INFO] device={src.util.DEFAULT_DEVICE}, cpu_threads={max(1, args.threads)}')
+    print(f'[INFO] device={src.util.DEFAULT_DEVICE}, cpu_threads={max(1, args.threads)}, layernorm={args.layernorm}')
     log_name = args.csv_file.stem if args.csv_file else args.env_name
     log = Log(Path(args.log_dir)/log_name, vars(args))
     log(f'Log dir: {log.dir}')
@@ -107,7 +108,7 @@ def main(args):
         qf=TwinQ(obs_dim, act_dim, hidden_dim=args.hidden_dim, n_hidden=args.n_hidden),
         vf=ValueFunction(obs_dim, hidden_dim=args.hidden_dim, n_hidden=args.n_hidden),
         policy=policy,
-        optimizer_factory=lambda params: torch.optim.Adam(params, lr=args.learning_rate),
+        optimizer_factory=lambda params: torch.optim.Adam(params, lr=args.learning_rate, weight_decay=args.weight_decay),
         max_steps=args.n_steps,
         tau=args.tau,
         beta=args.beta,
@@ -159,9 +160,14 @@ if __name__ == '__main__':
     parser.add_argument('--discount', type=float, default=0.99)
     parser.add_argument('--hidden-dim', type=int, default=256)
     parser.add_argument('--n-hidden', type=int, default=2)
+    parser.add_argument('--layernorm', action='store_true',
+                        help='add LayerNorm after each hidden layer in Q/V/policy MLPs '
+                             '(offline-RL anti-OOD-divergence trick; default off = recipe unchanged)')
     parser.add_argument('--n-steps', type=int, default=10**6)
     parser.add_argument('--batch-size', type=int, default=256)
     parser.add_argument('--learning-rate', type=float, default=3e-4)
+    parser.add_argument('--weight-decay', type=float, default=0.0,
+                        help='Adam L2 weight decay on Q/V/policy (default 0 = recipe unchanged)')
     parser.add_argument('--alpha', type=float, default=0.005)
     parser.add_argument('--tau', type=float, default=0.85)
     parser.add_argument('--beta', type=float, default=3.0)

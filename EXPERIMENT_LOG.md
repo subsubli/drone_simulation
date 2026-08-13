@@ -1181,3 +1181,66 @@ So "which INIT is best" depends on the axis: **hard v2 wins both**, but between 
 - **hard v2 / hard GAN (recovery-rich): best shape = star (50/100 · 48/100), circle = 0/100** — the aggressive recovery content handles the many-cornered star but *overshoots the smooth circle* (advancing but too imprecise to close 2 laps in the episode window).
 
 The crossover is the whole §29/§32 thesis in one line: **recovery data trades smooth-path precision for corner robustness even before DAgger** — exactly the tradeoff that survives to FINAL (§29: hard v2's loosest cruise precision is the circle). DAgger later equalizes all of them to ~500/500, but the *pre-DAgger* fingerprint of each dataset's off-path content is now measured cleanly. **Bottom line: the amount and realness of recovery content in the initial data sets pre-DAgger robustness — real heavy-kick (hard v2) is best, a GAN can carry most of it, gentle/clean data leaves the policy to fly off.**
+
+### 34d. INIT-optimization sweep on hard v2 — can hyperparameters beat the DAgger recipe's INIT? (2026-08-13)
+
+**Setup.** With hard v2 fixed as the best INIT *dataset* (§34a), the next question is whether the *hyperparameters* — all tuned assuming DAgger follows (§34's caveat) — can be re-tuned to lift the standalone INIT. Base = hard v2, INIT-only (no DAgger), all eval at 50 seeds × both dirs × 5 shapes = /500, D=1.0. Swept three levers, keeping everything else at the recipe. `tau` here is the IQL expectile (`asymmetric_l2_loss(adv, tau)` in [IQL-PyTorch-main/src/iql.py:51](IQL-PyTorch-main/src/iql.py#L51)); lower = less-optimistic V = more BC-like AWR. `oversample-offpath-frac` forces a fixed fraction of every batch to be off-path (|pos_err|>0.2) rows.
+
+**Lever 1+2 — tau × reward-clip 2×2** (the clip and expectile turned out to interact, so they must be read as a grid, not two independent sweeps):
+
+| | **rc = −1.0** (recipe) | **rc = −5.0** |
+|---|---|---|
+| **tau = 0.85** (recipe) | **95/500 (19.0%)** · dist 0.8–1.3 m · **max 22–44 m** | 42/500 (8.4%) · dist 0.6–0.66 m · max <3.5 m |
+| **tau = 0.70** | 66/500 (13.2%) · dist 0.72–0.82 m · max 2.5–6 m | 68/500 (13.6%) · dist 0.62–0.73 m · **max <2.8 m** |
+
+**Lever 3 — oversample-offpath-frac** (tau=0.85, rc=−1 fixed; hard v2 is *naturally* 32.3% off-path, so ovs=0 ≈ natural mix = the 95 baseline):
+
+| off-path frac per batch | traverse /500 |
+|---|---|
+| 0.25 (below natural) | 47/500 (9.4%) |
+| **0 = natural 32.3% (recipe)** | **95/500 (19.0%)** |
+| 0.50 (above natural) | 52/500 (10.4%) |
+
+**Finding (§34d) — no lever beats the DAgger recipe's INIT; the recipe is already near the INIT ceiling.** Three results, all pointing the same way:
+
+1. **Strong tau × rc interaction, and the recipe cell wins.** Lowering tau helps *only* at rc=−5 (42→68) and *hurts* at rc=−1 (95→66); the best completion cell of the whole 2×2 is the original **tau=0.85 / rc=−1 = 95/500**. The tau sweep's initial 20-seed win for tau=0.70 was real only *within* the rc=−5 slice — it did not transfer to the recipe's rc.
+2. **reward-clip = −5 is a completion-for-boundedness trade, not a free win.** Deepening the clip roughly *halves* completions (95→42 at tau=0.85) but collapses the divergence tail from **max 22–44 m to <3.5 m** — the recipe's occasional catastrophic flyaways (square/circle 22 m, star 44 m) vanish. So rc is the one genuinely useful INIT dial: pick rc=−1 for max completions, rc=−5 (with tau=0.70, its best cell: 68/500, max <2.8 m) for a policy that *never* flies off.
+3. **Oversampling strictly hurts.** Forcing any fixed off-path fraction is worse than natural uniform sampling — 0.25 (47) and 0.50 (52) both fall far below the natural-32% baseline (95). hard v2 already carries enough recovery; forcing more off-path just dilutes the on-path tracking signal, and forcing less starves it — either way the natural mix is best. (This is the opposite of the *soft*-data intuition where off-path was scarce; once the data is recovery-rich, oversampling is counterproductive.)
+
+**Lever 4+5 — capacity/length** (baseline cell tau=0.85, rc=−1, ovs=0; change one of network width or training length):
+
+| variant | traverse /500 | dist mean | max divergence |
+|---|---|---|---|
+| baseline (hidden 256, 300k steps) | 95/500 (19.0%) | 0.8–1.3 m | 22–44 m |
+| **hidden-dim 512** | **105/500 (21.0%)** | 1.9–2.9 m | **50–109 m** |
+| n-steps 600k | 49/500 (9.8%) | ~0.6 m | <4.3 m |
+
+**Finding (§34d, capacity) — the same completion↔boundedness trade reappears on the capacity axis, and width is the *only* lever that raises INIT completion above baseline.**
+- **hidden-dim 512 is the single sweep point that beats baseline on completion (105 vs 95, +10.5%)** — more width represents the recovery behavior better, lifting per-shape laps (star 52/100, pentagon 25/100). **But it is not free: its OOD off-path divergence is far worse** — dist mean 1.9–2.9 m (vs 0.8–1.3), p99 up to 49–73 m, and star **max 109 m**. A wider net completes more *and* saturates harder when it does go out-of-distribution (no recovery data to constrain the bigger function). So "best INIT" still depends on the axis: hidden-512 for max completions, but baseline/rc-5 for bounded worst-case.
+- **n-steps 600k *hurts* completion (95→49)** — doubling training on a coverage-hole dataset overtrains the init, committing it harder to the (flawed, recovery-less) pre-DAgger solution; it does tighten the tail (max <4.3 m) for the same over-conservative reason as rc=−5. This directly echoes §31 (volume/steps < content) and the 100k-revival lesson: more optimization of the initial data is not what completion needs.
+
+**Lever 6 — combine the two winning dials (hidden-512 × rc=−5).** hidden-512 buys completions (+tails), rc=−5 buys bounded tails (−completions) — are they additive? Ran hidden-512 at rc=−5 for both tau cells:
+
+| variant | traverse /500 | dist mean | max divergence |
+|---|---|---|---|
+| h512, rc−5, **tau 0.70** | 67/500 | 0.49–0.57 m | **<3.6 m (tight)** |
+| h512, rc−5, tau 0.85 | 59/500 | 0.9–1.9 m | 25–53 m (still flies off) |
+| *(ref) tau0.70, rc−5, 256* | 68/500 | 0.62–0.73 m | <2.8 m |
+| *(ref) hidden-512, rc−1* | 105/500 | 1.9–2.9 m | 50–109 m |
+
+**Finding (§34d, combination) — the two dials are NOT additive; INIT lives on a single completion↔boundedness Pareto frontier.** rc=−5 **caps completions at ~60–68 regardless of width** — hidden-512's completion boost (105 at rc−1) evaporates entirely at rc−5 (59–67, same as the 256-wide rc−5 cell). And width only helps *if* tau is right: h512/rc−5/tau0.85 is the **dominated** worst-of-both (59 completions *and* 53 m tails — the wider net just adds divergence capacity when the expectile isn't lowered to match, the same tau×rc interaction as the 2×2). The Pareto-optimal INIT points are: **hidden-512/rc−1 (105 completions, 109 m tails — completion end)**, baseline 256/rc−1 (95, 44 m — middle), and **tau0.70/rc−5 (68, <2.8 m — bounded end)**; h512/rc−5/tau0.85 and n-steps-600k sit *off* the frontier (dominated). There is no combination that gets hidden-512's completions *and* rc−5's bounded tails — deep-clip removes the aggressive-commitment mechanism that width exploits to close laps, which is the very same mechanism that produces the flyaways.
+
+**Net across all six levers: only network width beats the recipe's INIT completion (and only by trading tail safety, on the same frontier); tau/rc/oversample/steps/combos do not create a new better point.**
+
+### 34e. LayerNorm pushes the INIT frontier outward — the first genuine INIT improvement (2026-08-13)
+
+§34d closed with the pessimistic result that no hyperparameter *dial* escapes the completion↔boundedness frontier. But §30 diagnosed the flyaways as **OOD saturation of the plain ReLU MLP** in off-path states — a *mechanism*, not a dial. LayerNorm is the standard offline-RL fix for exactly that (normalizing hidden activations bounds the network's OOD extrapolation). Added as an optional `--layernorm` flag (a LayerNorm after each hidden Linear in Q/V/policy; `src.util.USE_LAYERNORM` set from main.py like DEFAULT_DEVICE, threaded into eval via config.json so the state_dict rebuilds correctly — default off, recipe untouched). Ran the baseline cell (rc−1, tau0.85) +LayerNorm at both widths:
+
+| INIT config | traverse /500 | dist mean (m) | max divergence (m) |
+|---|---|---|---|
+| baseline 256, no LN | 95/500 | 0.8–1.3 | 22–44 |
+| hidden-512, no LN | 105/500 | 1.9–2.9 | 50–**109** |
+| **256 + LN** | 95/500 | ~0.77 | **<3.4** |
+| **512 + LN** | **126/500** | ~0.63 | **<4.0** |
+
+**Finding (§34e) — LayerNorm is a genuine frontier *push*, not a move along it: 512+LN Pareto-dominates every prior INIT point.** It raises completions to **126/500 (25.2%, the best INIT ever — above no-LN width's 105 and baseline's 95)** *while* collapsing the OOD tail from **max 50–109 m to <4 m** (dist mean 0.63 vs the no-LN 512's 1.9–2.9). So it beats hidden-512 on completions *and* has a ~27× tighter worst-case — it dominates hidden-512, baseline, and even sits near the bounded end of the old frontier while carrying nearly double the completions of the previous bounded champion (tau0.70/rc−5's 68 at max <2.8 m). **256+LN** is a strict improvement over baseline too: same completions (95) but the catastrophic 44 m tail is gone (<3.4 m). This confirms §30's causal story — the flyaways were OOD MLP saturation, and normalizing it away recovers the wider net's completion benefit without the divergence cost. **The INIT frontier was not fundamental after all; it was an artifact of an unnormalized network, and LayerNorm moves the whole frontier outward.** Net update to §34d: LayerNorm (esp. at 512 width) is the one lever that genuinely improves INIT on *both* axes at once. Runs: `…_szro`(256+LN), `…_hkfi`(512+LN); raw `examples/sweep_ln_init/`. Code: `--layernorm` flag ([main.py], [src/util.py:mlp]); eval rebuild patched in [evaluate_trained_policy.py]. (Still DAgger-orthogonal — this improves the *starting* point; whether a better INIT shortens the DAgger needed to reach 500/500 is the open follow-up.) This proves §34's caveat quantitatively: the DAgger-oriented recipe (tau=0.85, rc=−1, ovs=0, hidden=256, 300k) is simultaneously near-optimal for INIT completion. There is no cheap *free* hyperparameter INIT win — the pre-DAgger coverage hole is a data/DAgger property, not a tuning artifact, consistent with the project's core "DAgger decides completion" thesis. The actionable INIT knobs are reward-clip and width, both as completion↔bounded-divergence dials (rc−5 / steps-600k tighten tails at a completion cost; hidden-512 buys completions at a tail cost). Revert-to-DAgger values (unchanged, stored in every run's config.json): **tau=0.85, reward-clip-min=−1.0, beta=3.0, n-steps=300k, hidden=256, n-hidden=2, oversample=0.0, include-lookahead, att_d_gain_scale=1.0.** Sweep runs: rc-5 `…_wdgl`(0.85)/`…_zsuq`(0.70)/`…_cgne`(0.55@20-seed); tau0.70 rc-1 `…_sydq`; ovs `…_mdmf`(0.25)/`…_jbux`(0.5); capacity `…_fhsx`(600k)/`…_rywc`(hidden512); combo `…_jtfs`(h512/rc5/tau85)/`…_uzpd`(h512/rc5/tau70). Raw: `examples/sweep_tau_init/`, `examples/sweep_ovs_init/`, `examples/sweep_cap_init/`, `examples/sweep_combo_init/`.
