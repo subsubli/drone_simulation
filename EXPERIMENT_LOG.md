@@ -1269,4 +1269,17 @@ Both add-ons **lower completions** (126→92 / 102) while tightening the tail *f
 | ensemble ×3 (best individuals) | 236/500 | 47.2% | 0.30–0.50 | <2.3 m |
 | **ensemble ×6 (all)** | **248/500** | **49.6%** | **0.24–0.47** | **<2.2 m** |
 
+**Best-model standard evaluation** (all6 ensemble, the top INIT policy, run through the same FINAL protocol as the soft-v2 / §29 tables — seeds 500–549 × both dirs × 5 shapes incl untrained star, att_d=1.0):
+
+| shape | net laps mean (min) | traverse | dist mean±std (m) | p90 | p99 | max |
+|---|---|---|---|---|---|---|
+| triangle | 1.74 (0.28) | 28/100 | 0.439±0.073 | 1.100 | 1.624 | 2.055 |
+| square | 1.97 (0.51) | 59/100 | 0.438±0.075 | 1.083 | 1.597 | 2.207 |
+| pentagon | 2.21 (0.55) | 80/100 | 0.402±0.073 | 0.996 | 1.615 | 2.156 |
+| circle | 1.67 (1.05) | 2/100 | 0.235±0.091 | 0.553 | 1.544 | 2.188 |
+| star *(untrained)* | 2.66 (1.10) | 79/100 | 0.473±0.055 | 1.104 | 1.592 | 2.081 |
+| **TOTAL** | | **248/500 (49.6%)** | | | | |
+
+This is the best INIT-only (pre-DAgger) policy in the project, in the canonical table format. Note the exceptionally clean tails (every shape max <2.2 m, p99 <1.65 m — vs a single no-LN INIT's 109 m) and cruise precision (dist 0.24–0.47 m): even non-completing rollouts stay near the path rather than diverging. Statistics on the number: single 512+LN across the 6 members is **120.7 ± 19.9 /500 (24.1% ± 4.0%)**; the all6 ensemble's 248/500 is **~6σ above** that single-model mean (binomial 95% CI [45.2%, 54.0%]) — the ensemble gain is decisively real, not seed luck.
+
 **Finding (§34f) — ensembling nearly doubles INIT completion (126→248) *and* tightens tails *and* improves precision, all without retraining, and it monotonically improves with N.** 248/500 = **49.6%** hits the top of the 30–50% target that no single-model lever could reach. The mechanism is exactly §30's: independent policies make *uncorrelated* OOD errors, so their action-average cancels the flyaway while preserving the agreed-upon in-distribution recovery — which is why divergence collapses to max <2.2 m (best of any INIT config) at the same time completions soar. More models = better on every axis (×2→×3→×6 : 201→236→248, tails 3.1→2.3→2.2 m). **Per-shape (all6): triangle 28, square 59, pentagon 80, star 79 — but circle 2/100.** The remaining ceiling is **circle**: a smooth shape has no corner to cut, so INIT (which never learns precise slow tracking without DAgger) can't close its laps regardless of ensembling — the cornered shapes carry the whole gain. So the ~50% is essentially "every cornered shape half-to-mostly complete, circle still zero." Headroom remains on the cornered shapes (none saturated at 100), so more/again-more diverse ensemble members could push past 50%. **This is the INIT breakthrough: not a hyperparameter, but averaging a handful of independently-seeded 512+LN policies — free at inference-scale-up, and it turns a 25% pre-DAgger policy into a ~50% one.** Code: `eval_ensemble.py`; raw `examples/ensemble_eval/`. Members: seed0 `…_hkfi/_hwlf/_jsma`, seed1 `…_reyd/_kpgu/_gweh`. (Open: does this ensemble-boosted INIT need less DAgger to reach 500/500 — the practical payoff — and can a circle-targeted member lift the last shape.)
