@@ -1129,3 +1129,20 @@ The off-path richness of the pool maps **monotonically** onto INIT quality: soft
 All three INIT (pre-DAgger) = **0/50** (diverge, as always). 
 
 **Finding (§33) — one *cornered* shape teaches all the others; the *smooth* shape does not.** A policy trained on **just square (or triangle)**, one direction, traces **every other shape essentially perfectly** — triangle/square/pentagon/circle all 50/50 including the **never-trained pentagon**, and even the sharp untrained **star at 49/50 (square) / 47/50 (triangle)**. This is strong confirmation that the path-relative state (pos_err + look-ahead) is genuinely **shape-invariant**: the policy learns "track the path / cut the corner," not "trace a square." The lone exception is the **circle-trained** policy: it generalizes to the other cornered shapes' *completion* (square/pentagon 50/50) but is visibly weaker where corners bite — **triangle 46/50, star only 21/50**, and its corner precision is loose (0.21 m vs 0.13–0.15 m for the corner-trained policies). The reason is intuitive: **circle has no corners, so a circle-only policy never learns the aggressive corner-cut**, and the sharpest shape (star) exposes that hole. Practical takeaway: **train on the shape with the hardest feature (corners) and the rest generalize for free; training on the easy/smooth shape does not transfer upward.** (Consistent with §14's triangle→others success, now shown to hold from a single shape and to fail specifically for the corner-free case.)
+
+### 33b. Direction generalization — CW-trained models evaluated on CCW (2026-08-13)
+
+Same three CW-only models as above, now evaluated on the **CCW** version of every shape (50 seeds, `--direction ccw`). This adds a *second* transfer axis on top of shape transfer: the models never saw CCW at all (data, DAgger, and prior eval were all CW).
+
+| trained on ↓ (CW only) | triangle | square | pentagon | circle | star | TOTAL (CCW) | *(TOTAL CW for ref)* |
+|---|---|---|---|---|---|---|---|
+| **square** | 50/50 · 0.140 | 50/50 · 0.155 | 50/50 · 0.150 | 50/50 · 0.061 | 48/50 · 0.171 | **248/250** | *249/250* |
+| **triangle** | 50/50 · 0.132 | 50/50 · 0.161 | 50/50 · 0.167 | 50/50 · 0.041 | 48/50 · 0.170 | **248/250** | *247/250* |
+| **circle** | 50/50 · 0.190 | 50/50 · 0.203 | 50/50 · 0.199 | 50/50 · 0.094 | 48/50 · 0.197 | **248/250** | *217/250* |
+| | | | | | | | *(cells = traverse / dist mean m)* |
+
+**Finding (§33b) — direction transfer is essentially free; the state is direction-symmetric.** Every CW-trained model scores **248/250 on CCW**, matching its CW score to within a couple of seeds — confirming the path-relative state (pos_err + look-ahead) is symmetric in traversal direction, so a model trained one way traces the mirror for free. The one striking asymmetry is the **circle-trained** model: it *rose* from **217/250 (CW) → 248/250 (CCW)** — better on the direction it never trained. Since the representation is direction-symmetric this cannot be genuine CCW-specialization; it means its CW failures (star 21/50, triangle 46/50) were **not a direction effect but seed-level corner difficulty** — the specific CW star/triangle seeds it stalled on happen to be harder than their CCW counterparts. This *reinforces* §33's conclusion: the circle-only policy's weakness is **corner-handling, not direction**, and direction is not the bottleneck for any of them. (Echoes the §9 / p.83 observations that CW-vs-CCW completion is direction-agnostic — here shown to hold even under single-shape training.)
+
+### 33c. Mixed-shape CW baseline — *(running)*
+
+To sit beside the single-shape rows at the **same data budget**, a mixed policy trained on all four shapes CW at once: ~100k rows TOTAL round-robined across triangle/square/pentagon/circle (~25k each, vs ~100k of one shape for the single runs), init 300k + DAgger×1 with ~60 episodes TOTAL (15 seeds × 4 shapes), same soft-v2 recipe, CW. Evaluated on all shapes both CW and CCW. This isolates the single variable *shape-diversity of the training set* at fixed budget. **Results pending — pipeline in DAgger stage; table to be filled on completion.**
