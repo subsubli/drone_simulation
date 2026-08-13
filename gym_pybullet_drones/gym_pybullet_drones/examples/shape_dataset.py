@@ -448,6 +448,7 @@ def run(
         adaptive_lookahead_k=DEFAULT_ADAPTIVE_LOOKAHEAD_K,
         adaptive_slew_k=DEFAULT_ADAPTIVE_SLEW_K,
         fixed_tilt_deg=None,
+        stop_fn=None,
         ):
     """`policy_fn`, if given, is called each step as `policy_fn(pos_err, state)` and its
     return value is used as `target_vel` instead of the pure-pursuit tracker's -- lets an
@@ -702,6 +703,11 @@ def run(
         env.render()
         if gui:
             sync(i, START, env.CTRL_TIMESTEP)
+
+        #### Optional early-stop hook (e.g. eval that only cares up to N laps): break cleanly so
+        #### the post-loop csv/env cleanup below still runs (never raise out of the sim loop).
+        if stop_fn is not None and stop_fn(closest_idx):
+            break
 
     csv_file.close()
     env.close()
