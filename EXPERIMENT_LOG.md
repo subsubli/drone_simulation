@@ -1306,3 +1306,35 @@ The circle "ceiling" (2/100 at 2.0) is an artifact of the 2-lap bar, not a track
 **The true completion rate of the best INIT policy is 98.6% (493/500) at the full 3-lap target — the fixed-time 49.6% was almost entirely a speed artifact.** Given time, the circle "ceiling" vanishes completely (2/100 → **100/100**), and even the never-trained star completes 100/100, all with |pos_err| ≤2.3 m sustained over the long run (no late escape). So the INIT ensemble (no DAgger) essentially **achieves the project's core goal — follow an arbitrary shape from path-relative state alone** — and the only remaining gap is *speed* (~55% of time-optimal), not tracking, stability, or generalization. DAgger's role is now reframed for this policy: not "can it complete" (it already does, given time) but "can it complete *fast enough* to close the laps in the nominal window." Runs/raw: `examples/all6_endur.txt`; code `eval_ensemble.py --n-laps 8 --stop-at 3.0`, `shape_dataset.run(stop_fn=…)`. Note the exceptionally clean tails (every shape max <2.2 m, p99 <1.65 m — vs a single no-LN INIT's 109 m) and cruise precision (dist 0.24–0.47 m): even non-completing rollouts stay near the path rather than diverging. Statistics on the number: single 512+LN across the 6 members is **120.7 ± 19.9 /500 (24.1% ± 4.0%)**; the all6 ensemble's 248/500 is **~6σ above** that single-model mean (binomial 95% CI [45.2%, 54.0%]) — the ensemble gain is decisively real, not seed luck.
 
 **Finding (§34f) — ensembling nearly doubles INIT completion (126→248) *and* tightens tails *and* improves precision, all without retraining, and it monotonically improves with N.** 248/500 = **49.6%** hits the top of the 30–50% target that no single-model lever could reach. The mechanism is exactly §30's: independent policies make *uncorrelated* OOD errors, so their action-average cancels the flyaway while preserving the agreed-upon in-distribution recovery — which is why divergence collapses to max <2.2 m (best of any INIT config) at the same time completions soar. More models = better on every axis (×2→×3→×6 : 201→236→248, tails 3.1→2.3→2.2 m). **Per-shape (all6): triangle 28, square 59, pentagon 80, star 79 — but circle 2/100.** The remaining ceiling is **circle**: a smooth shape has no corner to cut, so INIT (which never learns precise slow tracking without DAgger) can't close its laps regardless of ensembling — the cornered shapes carry the whole gain. So the ~50% is essentially "every cornered shape half-to-mostly complete, circle still zero." Headroom remains on the cornered shapes (none saturated at 100), so more/again-more diverse ensemble members could push past 50%. **This is the INIT breakthrough: not a hyperparameter, but averaging a handful of independently-seeded 512+LN policies — free at inference-scale-up, and it turns a 25% pre-DAgger policy into a ~50% one.** Code: `eval_ensemble.py`; raw `examples/ensemble_eval/`. Members: seed0 `…_hkfi/_hwlf/_jsma`, seed1 `…_reyd/_kpgu/_gweh`. (Open: does this ensemble-boosted INIT need less DAgger to reach 500/500 — the practical payoff — and can a circle-targeted member lift the last shape.)
+
+## 35. Reproduction pipelines (2026-08-14)
+
+Two training paths produce a general shape-tracing policy. **Standard (DAgger)** reaches strict 2-lap completion 500/500; **INIT ensemble (no DAgger)** reaches 98.6% endurance completion (full 3-lap target given time) — see §34f.
+
+**A. INIT ensemble path (§34e–f) — no DAgger, 98.6% endurance completion:**
+
+```
+데이터 수집(hard v2)
+  → IQL init 학습 (512-hidden + LayerNorm, 300k) ×6  [seed {0,1} × τ {0.85,0.90,0.95}]
+  → (DAgger 없음)
+  → 정책 앙상블 (6모델 raw target_vel 평균 + slew cap)
+  → 지구력 평가 (50시드 × 양방향 × 5도형, 시간충분 → 3랩)
+```
+
+| 단계 | 내용 / 명령 |
+|---|---|
+| 1. 데이터 수집 | hard v2 — 강한 kick (`--perturb_prob 1.0 --perturb_count 8 --perturb_magnitude 1.5`), `--att_d_gain_scale 1.0`; ~1.5M rows, off-path(recovery) 32% |
+| 2. IQL init 학습 | `main.py --hidden-dim 512 --layernorm --n-steps 300000 --tau 0.85 --reward-clip-min -1.0 --beta 3.0 --include-lookahead`; 이 설정을 **seed 0/1 × τ 0.85/0.90/0.95 = 6회** 학습 |
+| 3. DAgger | 없음 (INIT-only) |
+| 4. 앙상블 | 매 스텝 6모델의 raw target_vel 평균 → 단일 slew cap (`eval_ensemble.py`) |
+| 5. 평가 | `eval_ensemble.py --n-laps 8 --stop-at 3.0 --att-d-gain-scale 1.0 --seeds $(seq 500 549) --shapes triangle square pentagon circle star --direction both` → **493/500 = 98.6%** (fixed-time @2-lap = 248/500 = 49.6%, the difference is speed only) |
+
+**B. Standard path (§27/§29) — with DAgger, 500/500 strict 2-lap completion:**
+
+```
+데이터 수집 → IQL init 학습 (256-hidden, 300k) → DAgger×1~2 (코너 kick) → 재학습 → 평가
+```
+
+Recipe: `--n-steps 300000 --hidden-dim 256 --beta 3.0 --include-lookahead --reward-clip-min -1.0`, att_d_gain_scale 1.0; DAgger kicks `--slew-max-accel 2.0 --perturb_prob 1.0 --perturb_count 8 --perturb_magnitude 1.5`. This is the untouched revert baseline (§34d); all §34/§35-A changes are additive flags (`--layernorm`, `--weight-decay`, `eval_ensemble.py`, `stop_fn`) that leave it unchanged.
+
+**Difference in one line:** standard fills completion via **DAgger** (init → DAgger → retrain → 500/500); the new path fills it via **LayerNorm + policy ensembling** (init×6 → ensemble → 98.6% endurance, no DAgger). The remaining gap on path B is only *speed* (~55% of time-optimal), not tracking/stability/generalization.
