@@ -1334,3 +1334,35 @@ Best pre-DAgger policy = **six 512+LN IQL models (seed {0,1} × τ {0.85,0.90,0.
 | **TOTAL** | | **496/500 (99.2%)** | **493/500 (98.6%)** | | |
 
 Fixed-time 49.6% (@2-lap) vs endurance 98.6% (@3-lap): the difference is **speed only** (~55% of time-optimal), not tracking — every shape completes the full target given time (circle 2/100 → 100/100), tails stay ≤2.3 m throughout, no escape. Raw: `examples/ensemble_eval/all6.txt`, `examples/all6_endur.txt`. See §34f for method, §30 for the OOD-saturation mechanism ensembling cancels.
+
+**Per-shape at a glance (completion + cruise error side by side):**
+
+| shape | completion (fixed, ≥2.0) | completion (endurance, ≥3.0) | cruise error dist (m) | worst-step max (m) |
+|---|---|---|---|---|
+| triangle | 28/100 (28%) | 96/100 (96%) | 0.44 | 2.18 |
+| square | 59/100 (59%) | 98/100 (98%) | 0.44 | 2.32 |
+| pentagon | 80/100 (80%) | 99/100 (99%) | 0.40 | 2.25 |
+| circle | 2/100 (2%) | 100/100 (100%) | **0.24** | 2.25 |
+| star *(untrained)* | 79/100 (79%) | 100/100 (100%) | 0.47 | 2.08 |
+| **TOTAL** | **248/500 (49.6%)** | **493/500 (98.6%)** | 0.24–0.47 | ≤2.32 |
+
+Reading it per shape: **error** tracks corner-count — circle (smooth) is tightest at 0.24 m, the cornered shapes sit 0.40–0.47 m (star highest, most corners); **fixed-time completion** tracks speed×corners (circle lowest 2%, triangle 28% — slow through many sharp corners), but **endurance completion converges to 96–100% for every shape** once time is adequate. So per-shape the remaining weakness is *cruise error at corners* and *speed*, not completion.
+
+## 36. One DAgger pass closes BOTH gaps — a single model beats the 6-model INIT ensemble (2026-08-14)
+
+**Why this section exists.** §34f/§35 left the best pre-DAgger policy with two residual gaps — *speed* (fixed-time only 49.6%, ~55% of time-optimal) and *cruise precision* (0.24–0.47 m). The standing project lesson is "DAgger, not initial data, decides completion"; this tests whether **one** DAgger pass, collected on the *deployed* distribution (driven by the 6-model ensemble itself), also closes the speed+precision gaps — and whether it does so for a single model, retiring the ensemble.
+
+**Method.** Drive DAgger rollouts with the **6-model 512+LN ensemble** (§34f) so the visited states are exactly the deployed distribution; pure-pursuit supplies the labels. Clean cruise (`--perturb_prob 0`, precision-targeted, no corner kicks), 4 trained shapes × both dirs × 15 seeds = **60 episodes**, D=1.0. Merge with the hard v2 base (`data_hard_v2/shape_dataset` 423 ep + dagger 60 ep = 483 ep / 1.72 M rows → `data_hard_v2_dagg1/`, originals untouched). Retrain **one** 512+LN model, identical config to the ensemble members (seed 0, τ0.85, β3.0, rc −1.0, lookahead, smooth 0.05, 300k). Eval: 10 seeds 500–509 × both × 5 shapes = 100/model, fixed-time, D=1.0. (Ensemble-driven collection + single retrain; `collect_dagger.py --run-dirs`, ensemble driver added.)
+
+**Result — one DAgger pass, single model (fixed-time @2.0 lap):**
+
+| shape | BASE single (no DAgger) trav / dist / max | **DAgger×1 single** trav / dist / max |
+|---|---|---|
+| triangle | 5/20 / 0.641 / 3.08 | **20/20 / 0.116 / 0.61** |
+| square | 4/20 / 0.667 / 3.97 | **20/20 / 0.133 / 0.66** |
+| pentagon | 6/20 / 0.599 / 2.54 | **20/20 / 0.129 / 0.63** |
+| circle | 0/20 / 0.690 / 3.62 | **20/20 / 0.036 / 0.29** |
+| star *(untrained)* | 9/20 / 0.642 / 2.41 | **20/20 / 0.158 / 0.61** |
+| **TOTAL** | **24/100 (24%)** | **100/100 (100%)** |
+
+**Headline: one DAgger pass takes a SINGLE model from 24/100 to 100/100 fixed-time completion, tightens cruise error ~4× at corners (0.6 → 0.13 m) and ~19× on the circle (0.69 → 0.036 m), kills the tails (max 3–4 m → ≤0.66 m), and speeds it up (net laps 1.3–2.0 → 2.5–3.1) — all at once.** So the ensemble's 49.6% ceiling (§34f) was *purely* the no-DAgger limitation, not a data or capacity limit: after one DAgger pass a single model **beats the 6-model INIT ensemble on every axis**, retiring the ensemble. Precision lands in the DAgger-FINAL band — corners 0.12–0.16 m match soft v2's 0.10–0.12 (§27); circle 0.036 m is ~2× looser than soft v2's 0.016 but exactly as §29 predicts (hard v2's recovery-excursion content is noisier → ~2× cruise precision on the smooth circle). This is the project's core lesson made maximally sharp: **IQL on look-ahead state gets the shape-following *ability*; a single DAgger pass on the deployed distribution converts it into a fast, precise, complete tracker.** Runs: base member `runs/merged/…_hkfi`; DAgger data `data_hard_v2_dagg1/`; DAgger×1 model `runs/merged/08-14-26_05.58.01_xtnp`. Raw: `scratchpad/eval_base_small.txt`, `eval_dagg_small.txt`. (10-seed sample — completion is saturated so the small n is fine; a 50-seed confirm is the obvious next step if a tighter cruise-error CI is wanted.)

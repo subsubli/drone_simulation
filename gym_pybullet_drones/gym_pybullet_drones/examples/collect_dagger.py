@@ -15,11 +15,16 @@ import os
 
 import shape_dataset as sd
 from evaluate_trained_policy import load_policy, load_normalization, make_policy_fn
+from eval_ensemble import make_ensemble_fn
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--run-dir', required=True, help='trained policy run dir (final.pt + config + npz)')
+    parser.add_argument('--run-dir', help='trained policy run dir (final.pt + config + npz)')
+    parser.add_argument('--run-dirs', nargs='+', default=None,
+                         help='multiple run dirs -> DRIVE the DAgger rollouts with the action-average '
+                              'ENSEMBLE of these policies (pure-pursuit still supplies the labels). '
+                              'Overrides --run-dir. Lets DAgger collect on the better ensemble states.')
     parser.add_argument('--shapes', nargs='+', default=['triangle'])
     parser.add_argument('--seed-start', type=int, default=0)
     parser.add_argument('--n-seeds', type=int, default=20, help='seeds seed_start .. seed_start+n_seeds-1')
@@ -41,10 +46,25 @@ def main():
                               "directions it was trained on.")
     ARGS = parser.parse_args()
 
-    with open(os.path.join(ARGS.run_dir, 'config.json')) as f:
-        cfg = json.load(f)
-    obs_mean, obs_std, action_bound = load_normalization(ARGS.run_dir)
-    policy = load_policy(ARGS.run_dir, max_action=action_bound)
+    ensemble = ARGS.run_dirs is not None
+    if ensemble:
+        #### Drive the DAgger rollouts with the deployed ENSEMBLE (action-average of N policies).
+        #### This visits exactly the on-policy states the ensemble reaches; pure-pursuit labels them.
+        pols, means, stds = [], [], []
+        include_la = None
+        for rd in ARGS.run_dirs:
+            with open(os.path.join(rd, 'config.json')) as f:
+                c = json.load(f)
+            la = bool(c.get('include_lookahead'))
+            include_la = la if include_la is None else include_la
+            m, s, ab = load_normalization(rd)
+            pols.append(load_policy(rd, max_action=ab)); means.append(m); stds.append(s)
+        print(f"[INFO] driving DAgger with ENSEMBLE of {len(pols)} policies (include_lookahead={include_la})")
+    else:
+        with open(os.path.join(ARGS.run_dir, 'config.json')) as f:
+            cfg = json.load(f)
+        obs_mean, obs_std, action_bound = load_normalization(ARGS.run_dir)
+        policy = load_policy(ARGS.run_dir, max_action=action_bound)
 
     n_eps = 0
     for seed in range(ARGS.seed_start, ARGS.seed_start + ARGS.n_seeds):
@@ -57,9 +77,13 @@ def main():
         for shape in ARGS.shapes:
             #### Fresh policy_fn per episode so the slew-limiter's internal prev-action state
             #### resets at each episode start (it's a stateful closure).
-            policy_fn = make_policy_fn(policy, obs_mean, obs_std, slew_max_accel=ARGS.slew_max_accel,
-                                        include_prev_action=bool(cfg.get('include_prev_action')),
-                                        include_lookahead=bool(cfg.get('include_lookahead')))
+            if ensemble:
+                policy_fn = make_ensemble_fn(pols, means, stds, include_la,
+                                             slew_max_accel=ARGS.slew_max_accel)
+            else:
+                policy_fn = make_policy_fn(policy, obs_mean, obs_std, slew_max_accel=ARGS.slew_max_accel,
+                                            include_prev_action=bool(cfg.get('include_prev_action')),
+                                            include_lookahead=bool(cfg.get('include_lookahead')))
             sd.run(shape=shape, seed=seed, gui=False, policy_fn=policy_fn, dagger_relabel=True,
                    att_d_gain_scale=ARGS.att_d_gain_scale, output_folder=ARGS.output_folder,
                    perturb_prob=ARGS.perturb_prob, perturb_count=ARGS.perturb_count,

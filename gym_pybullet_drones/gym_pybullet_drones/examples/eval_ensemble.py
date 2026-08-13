@@ -110,7 +110,7 @@ def main():
     print(f"# ensemble N={len(policies)} {A.label or ''}  seeds {A.seeds[0]}-{A.seeds[-1]} x {A.direction}")
     print(f"# n_laps(time budget)={A.n_laps or 3}")
     print(f"{'shape':10} {'laps mean±std':>16} {'min':>5} {'t2.0':>6} {'t3.0':>6} {'dist mean±std':>16} "
-          f"{'p90':>6} {'p99':>6} {'max':>7}")
+          f"{'d_cmp':>7} {'p90':>6} {'p99':>6} {'max':>7}")
     THRESH = [2.0, 3.0]
     tot = {t: 0 for t in THRESH}
     n_all = 0
@@ -127,8 +127,10 @@ def main():
         for t in THRESH:
             tot[t] += int((laps >= t).sum())
         t20 = int((laps >= 2.0).sum()); t30 = int((laps >= 3.0).sum())
+        comp = dists[laps >= 2.0]                              # completing-only cruise error
+        cstr = f"{comp.mean():.3f}" if len(comp) else "  -  "
         print(f"{shape:10} {laps.mean():>7.2f}±{laps.std():<7.2f} {laps.min():>5.2f} {t20:>3}/{len(laps)} {t30:>3}/{len(laps)} "
-              f"{dists.mean():>7.3f}±{dists.std():<7.3f} {p90:>6.3f} {p99:>6.3f} {pmax:>7.3f}")
+              f"{dists.mean():>7.3f}±{dists.std():<7.3f} {cstr:>7} {p90:>6.3f} {p99:>6.3f} {pmax:>7.3f}")
     for t in THRESH:
         print(f"# TOTAL traverse @>= {t} lap: {tot[t]}/{n_all} ({100*tot[t]/n_all:.1f}%)")
 
