@@ -1,5 +1,5 @@
 # Drone Offline-RL — Development & Experiment Log
-
+claude ai를 이용해 작성했습니다.
 > Full development log for the offline-RL shape-tracing pipeline (gym-pybullet-drones + IQL): design decisions, diagnoses, and a dated experiment timeline with all measured numbers. See `README.md` for how to run the pipeline and the shipped policies.
 
 
