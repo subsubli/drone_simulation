@@ -24,3 +24,6 @@ dataset_1M/
 drone_stacked_training_code/
 **/_cql_*.py
 
+
+# IQL 원고 (개인 작업물, 공유 안 함)
+paper_iql.md
