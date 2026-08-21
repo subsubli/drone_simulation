@@ -27,3 +27,6 @@ drone_stacked_training_code/
 
 # IQL 원고 (개인 작업물, 공유 안 함)
 paper_iql.md
+
+# 표 모음 (개인 작업물)
+*.docx
