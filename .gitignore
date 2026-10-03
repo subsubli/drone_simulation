@@ -30,3 +30,8 @@ paper_iql.md
 
 # 표 모음 (개인 작업물)
 *.docx
+
+# Local X500 training artifacts and ONNX export dependencies
+.onnx-deps/
+IQL-PyTorch-main/runs_x500/
+IQL-PyTorch-main/data_x500_dagger/

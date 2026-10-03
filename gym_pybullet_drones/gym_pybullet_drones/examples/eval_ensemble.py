@@ -92,7 +92,9 @@ def main():
     ap.add_argument('--stop-at', type=float, default=None,
                     help='early-stop each rollout once it reaches this many net laps (saves time; '
                          'e.g. 3.0 with --n-laps 8 to just check "can it reach 3 laps given time").')
+    ap.add_argument('--init-yaw', type=float, default=0., help='drone start heading in deg (track yaw stays random)')
     A = ap.parse_args()
+    sd.INIT_YAW_DEG = A.init_yaw
     DIRS = {'both': (False, True), 'ccw': (False,), 'cw': (True,)}[A.direction]
 
     policies, means, stds = [], [], []
@@ -108,7 +110,7 @@ def main():
     os.makedirs(os.path.join(out, 'shape_dataset'), exist_ok=True)
 
     print(f"# ensemble N={len(policies)} {A.label or ''}  seeds {A.seeds[0]}-{A.seeds[-1]} x {A.direction}")
-    print(f"# n_laps(time budget)={A.n_laps or 3}")
+    print(f"# n_laps(time budget)={A.n_laps or 3}  init_yaw={A.init_yaw}")
     print(f"{'shape':10} {'laps mean±std':>16} {'min':>5} {'t2.0':>6} {'t3.0':>6} {'dist mean±std':>16} "
           f"{'d_cmp':>7} {'p90':>6} {'p99':>6} {'max':>7}")
     THRESH = [2.0, 3.0]

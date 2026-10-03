@@ -82,6 +82,7 @@ DEFAULT_DRONE = DroneModel("cf2x")
 DEFAULT_SHAPE = 'triangle'
 DEFAULT_PHYSICS = Physics("pyb_drag")
 DEFAULT_GUI = True
+INIT_YAW_DEG = 0.  # drone start heading, held by the attitude loop; data/eval convention = 0 (track yaw is random)
 DEFAULT_OBSTACLES = False
 DEFAULT_SIMULATION_FREQ_HZ = 1000
 DEFAULT_CONTROL_FREQ_HZ = 100
@@ -535,7 +536,7 @@ def run(
                                   adaptive_lookahead_k=adaptive_lookahead_k, adaptive_slew_k=adaptive_slew_k)
 
     INIT_XYZ = np.array([TARGET_POS[0]])
-    INIT_RPY = np.array([[0, 0, 0]])
+    INIT_RPY = np.array([[0, 0, np.radians(INIT_YAW_DEG)]])
 
     #### Create the environment #################################
     env = CtrlAviary(drone_model=drone,

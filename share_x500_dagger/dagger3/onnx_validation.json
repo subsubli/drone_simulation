@@ -1,0 +1,10 @@
+{
+  "heldout_rows": 22573,
+  "max_absolute_error": 5.178153514862061e-07,
+  "input": "observations: float32 [batch,25], raw (not normalized)",
+  "output": "actions: float32 [batch,4], normalized CTBR",
+  "normalization_embedded": true,
+  "opset": 17,
+  "onnx_version": "1.23.1",
+  "onnxruntime_version": "1.23.2"
+}

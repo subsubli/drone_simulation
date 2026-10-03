@@ -1366,3 +1366,191 @@ Reading it per shape: **error** tracks corner-count — circle (smooth) is tight
 | **TOTAL** | **24/100 (24%)** | **100/100 (100%)** |
 
 **Headline: one DAgger pass takes a SINGLE model from 24/100 to 100/100 fixed-time completion, tightens cruise error ~4× at corners (0.6 → 0.13 m) and ~19× on the circle (0.69 → 0.036 m), kills the tails (max 3–4 m → ≤0.66 m), and speeds it up (net laps 1.3–2.0 → 2.5–3.1) — all at once.** So the ensemble's 49.6% ceiling (§34f) was *purely* the no-DAgger limitation, not a data or capacity limit: after one DAgger pass a single model **beats the 6-model INIT ensemble on every axis**, retiring the ensemble. Precision lands in the DAgger-FINAL band — corners 0.12–0.16 m match soft v2's 0.10–0.12 (§27); circle 0.036 m is ~2× looser than soft v2's 0.016 but exactly as §29 predicts (hard v2's recovery-excursion content is noisier → ~2× cruise precision on the smooth circle). This is the project's core lesson made maximally sharp: **IQL on look-ahead state gets the shape-following *ability*; a single DAgger pass on the deployed distribution converts it into a fast, precise, complete tracker.** Runs: base member `runs/merged/…_hkfi`; DAgger data `data_hard_v2_dagg1/merged.csv` (regenerable via `merge_shape_dataset.py data_hard_v2/shape_dataset dagger_ens1/shape_dataset`); DAgger×1 model `runs/merged/08-14-26_05.58.01_xtnp`. Raw: `examples/dagg1_eval/{base_single,dagg1_single}.txt`. (10-seed sample — completion is saturated so the small n is fine; a 50-seed confirm is the obvious next step if a tighter cruise-error CI is wanted.)
+
+## 37. X500 CTBR IQL (PX4/Gazebo data) — offline verification of the first model (2026-10-03)
+
+**Why this section exists.** First IQL run on the new X500 dataset (`datasets/data_track.csv.gz`, PX4 SITL + Gazebo `gz_x500`, 100k transitions / 37 flights, 100 Hz; see `datasets/DATASET.md`, `datasets/X500_RUN.md`). This is a different task from §1–36: obs = 25-D (pos error to the *time-indexed* target, R, v, ω, prev action, target vel), action = 4-D CTBR (thrust + body rates) instead of 3-D target velocity, so none of the shape-tracking evaluators apply. **No X500-compatible closed-loop environment exists in this repo**, so everything here is offline action-fit, not flight performance.
+
+**Runs.** `IQL-PyTorch-main/runs_x500/data_track/` holds three folders started ~20 s apart with identical config & split; only one finished:
+
+| run | state |
+|---|---|
+| `10-03-26_14.52.35_vtkg` | aborted after 10k steps (val MSE 0.0143), no weights |
+| `10-03-26_14.52.58_vtkg` | aborted before the first logged step, no weights |
+| **`10-03-26_14.53.22_vtkg`** | **complete**, 300k steps, `final.pt` + `policy.onnx` |
+
+Config: 256×2, β3.0, τ0.85, γ0.99, smooth 0.05, **no reward clip** (keeps the −10 crash penalty), batch 256, seed 0. Flight-level split (train 30 flights / 77,427 rows; val flights 2,3,4,18,20,34,35 / 22,573 rows), normalization from train only, `terminal` stops bootstrap, `timeout` does not.
+
+**Verification (held-out flights, via the exported ONNX = deployment path).** Script `IQL-PyTorch-main/verify_x500.py`, raw `runs_x500/data_track/10-03-26_14.53.22_vtkg/offline_verification.txt`.
+
+| predictor | val action MSE |
+|---|---|
+| IQL policy (final, 300k) | **0.01818** |
+| IQL policy @10k (progress.csv) | 0.01444 |
+| train-mean action (constant) | 0.01910 |
+| copy previous action `obs[18:22]` | 0.02272 |
+| train fit of the same policy | 0.01012 |
+| ≈ noise floor (45% "medium" segments × σ=0.15 action noise) | ~0.010 |
+
+Per-dim (thrust, roll, pitch, yaw): RMSE 0.128 / 0.141 / 0.139 / 0.131, correlation with logged action **0.25 / 0.47 / 0.42 / 0.22**, pred std ≈ 55–75% of logged std. Mean thrust is unbiased (0.1631 vs 0.1631 logged, 19.9 N). Predicted actions are ~2.3× smoother than logged (mean |Δa| 0.038 vs 0.087) — expected, the policy outputs the mean and the logged medium segments carry injected noise.
+
+By state: pos_err < 0.1 m → MSE 0.0077 (base 0.0086); 0.1–0.3 m → 0.0180 (base 0.0174, i.e. *no better than constant*); 0.3–1 m → 0.0339 (base 0.0422); > 1 m → 0.0988 (base 0.1198). Last 50 steps before a crash (204 val rows): MSE 0.181 vs 0.0167 elsewhere. Per flight: long clean flights 2/3/18 track the baseline (0.020/0.020/0.005 vs 0.020/0.020/0.006); the short crash flights 20/34 are badly off (0.11/0.17).
+
+ONNX: full held-out batch and batch=1 give identical outputs, all finite, max |a| 0.9989 ≤ 1; PyTorch↔ONNX max error 5.07e-7 (`onnx_validation.json`). **Export / deployment path is correct.**
+
+**Reading it.**
+1. **The pipeline is sound** (split, normalization, terminal/timeout, ONNX embedding all check out), but **the policy barely beats a constant action offline** (−4.8% MSE vs train-mean; worse than constant in the 0.1–0.3 m band, where most cruise rows live).
+2. **Val MSE rises monotonically 0.0144 → 0.0182 over 10k → 300k while train MSE falls to the ~noise floor** → the policy is fitting train-flight specifics (30 flights is very few). Only `final.pt` is saved, so the better early checkpoint is gone.
+3. Caveat: IQL with β=3 is advantage-weighted, not BC, so MSE to the logged (half-noisy) behaviour is *not* its objective — low action fit doesn't prove bad flight, and high fit wouldn't prove good flight. Project lesson stands: only closed-loop evaluation decides, never an offline error mean. Treat this model as **unverified for flight**.
+4. Near-crash states are the worst-fit (MSE ~11× elsewhere) — the same OOD-tail story as §30, and exactly what DAgger fixed in §36; here there is no simulator to DAgger in.
+
+**Next.** (a) Get a closed-loop X500 evaluator (PyBullet `x500_env` with the same obs layout per DATASET.md §9, or Gazebo) — without it nothing about flight can be claimed; (b) save checkpoints every eval period and/or early-stop on val MSE; (c) consider more flights / an expert-only subset (52% of data) as a cleaner target before the noisy medium segments.
+
+### 37b. Closed-loop test in a minimal data-identified X500 sim (2026-10-03)
+
+**Why.** §37 could only measure offline action fit; no X500 env exists here and Gazebo/PX4 SITL is impractical on macOS arm64. So: build the *simplest* sim that reproduces the data's dynamics, check it with the PD expert, then fly the policy.
+
+**Sim** (`IQL-PyTorch-main/x500_sim.py`, numpy only, ~150 lines). Dynamics are **least-squares identified from the train flights**, not guessed:
+- body rate per axis: `w[t+1] = w[t] + Σ_{l=0..5} b_l·sp[t-l] + c·w[t]`. Fitted response peaks at lag 2–3 steps (20–30 ms delay), τ ≈ 50–100 ms on roll/pitch; yaw responds very weakly (c = −0.003).
+- velocity: `v[t+1] = v[t] + dt·(kT·T[t-2]·R[:,2] − g_eff·ẑ)` → kT = 0.4146, g_eff = 8.206 (hover a0 = 0.158, close to the logged mean of 0.163).
+- one-step R², train / val refit: ω_x 0.78/0.89, ω_y 0.80/0.88, ω_z 0.47/0.56, v 0.75/0.71. The remainder is mostly EKF noise, which the sim does not model.
+- Not modelled: EKF noise, wind, motor saturation (beyond the action clip), mass variation. Trajectories follow DATASET.md §7: circle or figure-8, r 0.8–1.5 m, period 6–10 s, z wiggle 0–0.3 m, z0 = 2.3 m. Crash criteria = the dataset's terminal criteria.
+- **Gotcha found:** the data's heading is yaw ≈ **−94°** (median; PX4 start heading). Starting the sim at yaw 0 put the R-block of the obs fully OOD and the policy crashed 6/6 in ~2.6 s. With `YAW0 = −94°` the policy flies. Lesson: the 25-D obs is **not yaw-invariant** (R is in world frame), and the policy only knows the headings present in the data.
+
+**Sim sanity check = the PD expert** (geometric PD, kp 4.0 / kd 3.5 / k_att 8.0 from DATASET.md, heading held at YAW0): 50/50 survive, mean error 0.177 m. That is in line with the dataset's mean tracking error of 0.203 m (which mixes expert and medium segments). The sim is credible for a fly/crash verdict.
+
+**Result** (50 episodes × 20 s, seeds 1000–1049, same trajectories for both). Raw output: `runs_x500/data_track/10-03-26_14.53.22_vtkg/sim_eval.{txt,json}`.
+
+| controller | shape | n | crash | mean err (all) | err (survivors) | max | mean flight time |
+|---|---|---|---|---|---|---|---|
+| PD expert | circle | 29 | 0 | 0.158 | 0.158 | 0.29 | 20.0 s |
+| PD expert | eight | 21 | 0 | 0.203 | 0.203 | 0.51 | 20.0 s |
+| **PD expert** | **all** | 50 | **0 (0%)** | 0.177 | 0.177 | 0.51 | 20.0 s |
+| IQL | circle | 29 | 22 | 0.362 | 0.187 | 6.74 | 13.4 s |
+| IQL | eight | 21 | 20 | 0.709 | 0.203 | 6.63 | 4.9 s |
+| **IQL** | **all** | 50 | **42 (84%)** | 0.508 | 0.189 | 6.74 | 9.8 s |
+
+IQL crash-time percentiles (p10/p50/p90): 2.9 / 6.2 / 15.4 s.
+
+**Reading it.**
+1. **The first X500 IQL model is not flight-worthy:** 84% crash within 20 s (figure-8 20/21, circle 22/29). When it does survive, it tracks as well as PD (0.189 vs 0.177 m). So the policy has learned "how to track", but **it does not recover once it drifts off the data distribution**. This is the same failure mode as the pre-DAgger shape policies (§30, §34). The §37 offline numbers predicted it: action MSE ≈ constant baseline, near-crash rows 11× worse.
+2. The diag trace shows the failure is a **slowly growing attitude/rate oscillation**: tilt 4° → 17° → 25° → 44° over about 1.5 s, with rate commands of the same sign as ω (positive feedback), until the tilt limit. The figure-8 (higher accel, direction reversals) triggers it sooner.
+3. Caveat: this is a sim-to-sim test. The sim has no EKF noise and fitted yaw dynamics with R² 0.47, so absolute numbers carry sim error. But the PD expert flies 0/50 crashes in the same sim, so "IQL 84% vs PD 0%" is a policy problem, not a sim problem.
+
+**Next.** This sim enables what §36 proved decisive: **DAgger** (fly IQL in the sim, label the visited states with the PD expert, retrain). Combine it with the §37 fixes (save checkpoints, early stop). Optional: train with yaw randomization or a yaw-invariant obs (R in heading frame) so the policy does not depend on YAW0.
+
+### 37c. Sim validation fixed + ensemble vs one sim-DAgger pass (2026-10-03)
+
+**Sim validation, redone after review.** The §37b "val-refit R²" refit the model *on* the val flights, so it said nothing about generalization. Replaced with: fit on train flights → predict val flights (no refit), plus open-loop multi-step replay (start at a real val state, feed the logged actions, compare). Raw: `IQL-PyTorch-main/runs_x500/sim_validation.txt` (`x500_sim.py --validate`).
+- **Held-out one-step R²** (train-fit): ω_x 0.879, ω_y 0.867, ω_z 0.554, v 0.713. That is ≥ the train R², so the dynamics generalize to unseen flights.
+- **Linear drag (per axis): rejected by the data.** Fitted D = [0.027, 0.037, −0.261]: horizontal ≈ 0, z *negative* (unphysical anti-damping, absorbing lag/EKF effects). Held-out R² rises only 0.713 → 0.717, and multi-step replay gets slightly worse (v RMSE at 1 s 0.351 → 0.359). Default stays drag-free; `--drag` remains as an option.
+- **Open-loop replay on val flights** (435 starts, RMSE; "hold" baseline = state stays constant):
+
+| horizon | pos (m) | vel (m/s) | rate (rad/s) | attitude (°) | hold: vel / rate / att |
+|---|---|---|---|---|---|
+| 0.01 s | 0.003 | 0.007 | 0.041 | 0.08 | 0.012 / 0.114 / 0.32 |
+| 0.10 s | 0.015 | 0.039 | 0.079 | 0.40 | 0.132 / 0.554 / 2.72 |
+| 0.50 s | 0.097 | 0.186 | 0.087 | 1.23 | 0.645 / 0.701 / 7.84 |
+| 1.00 s | 0.259 | 0.351 | 0.098 | 2.40 | 1.140 / 0.781 / 11.05 |
+
+Driven open-loop with the real actions, the sim stays within 2.4° attitude and 0.1 rad/s rate after 1 s; no multi-step blow-up. Combined with PD 0/50, it is a usable surrogate for **large** relative differences (crash counts), but not for cm-level error differences.
+
+**Metric note.** `mean_err (all)` averages episodes of different lengths (crashed ones are cut short), so it is supplementary only. Primary metrics are **crash count, survival time, survivor error**.
+
+**Setups** (all 256×2, β3, smooth 0.05, 300k steps, same flight split; eval = 50 episodes × 20 s, seeds 1000–1049, YAW0 −94°):
+- members: seed {0,1} × τ {0.85, 0.90, 0.95} (`runs_x500/ens/s*_t*/`, base model = s0_t0.85);
+- **ensemble6**: action-average of the 6 members (as §34f);
+- **DAgger×1**: base model flown in the sim for 100 episodes (seeds 2000–2099, disjoint from eval; 93/100 crashed). The PD expert labels every visited state → 81,063 rows (`data_x500_dagger/d1.csv.gz`). **Consistency:** next_obs comes from a *cloned* sim stepped with the PD label (not the policy's action), so the logged action causally explains the transition. Reward is the DATASET.md formula on the current obs. terminal = the label's twin crashed; the policy-crash cut is marked timeout. Then retrain one model on real + DAgger (158k train rows; val flights unchanged, real only). Run `runs_x500/dagg1/data_track/10-03-26_15.49.45_vtkg`.
+
+| model | crash /50 | survival mean (s) | survivor err (m) | crash time p10/p50/p90 (s) | offline val MSE |
+|---|---|---|---|---|---|
+| PD expert | 0 | 20.0 | 0.177 | – | – |
+| s0_t0.85 (base) | 43 | 9.6 | 0.156 | 3.1 / 6.4 / 16.4 | 0.0182 |
+| s1_t0.85 | 31 | 13.0 | 0.207 | | 0.0174 |
+| s0_t0.90 | 26 | 14.3 | 0.223 | | 0.0182 |
+| s1_t0.90 | 33 | 11.5 | 0.208 | | 0.0175 |
+| s0_t0.95 | 46 | 9.1 | 0.262 | | 0.0195 |
+| s1_t0.95 | 46 | 8.0 | 0.190 | | 0.0184 |
+| **ensemble6** | **6** | 18.9 | 0.245 | 6.4 / 9.5 / 17.2 | – |
+| **DAgger×1 (single)** | **8** | 18.5 | **0.200** | 4.8 / 10.7 / 14.5 | 0.0291 |
+
+(The base model reads 43 here vs 42 in §37b: the sim fit changed slightly once the velocity regression used the common lag mask, kT 0.4146 → 0.4149. Single-episode-level noise.)
+
+By shape: ensemble6 circle 0/29 crash (err 0.231), eight 6/21 (0.272); DAgger×1 circle 5/29 (0.174), eight 3/21 (0.235), max 2.18 m vs ensemble 5.98 m.
+
+**Reading it.**
+1. **Single members are uniformly bad and noisy:** 26–46 of 50 crash, with large seed and τ variance. τ 0.95 is worst (46/46), τ 0.90 the best of the singles. One seed tells you little.
+2. **Both levers fix most of it, as the shape project predicted (§34f / §36):** ensemble6 cuts crashes 43 → 6, DAgger×1 cuts them 43 → 8. They are roughly tied on crash count, but DAgger×1 is **more precise** (survivor err 0.200 vs 0.245, max 2.18 vs 5.98 m) and runs as **one** network. The ensemble buys stability by averaging out each member's OOD errors (§30), but it tracks more sluggishly.
+3. **Offline val MSE is anti-correlated with flight here:** DAgger×1 has the *worst* action MSE (0.029, because its labels now include PD actions in states the logged behaviour never visited) and the best flight. More evidence that offline action fit is not the metric (§37).
+4. The ensemble and DAgger fail on different shapes: the ensemble crashes only on figure-8s (direction reversals), DAgger×1 is split 5 circle / 3 eight. Not resolved yet: one DAgger pass from a 93%-crash driver mostly saw *early-flight* states.
+
+**Next (running):** DAgger round 2, driven by the DAgger×1 model (survives longer → visits later-flight states), retrain on real + d1 + d2. After that: the yaw sweep (−94 ± 5/15/30/60°, random), deliberately kept until the stability comparison is done.
+
+### 37d. DAgger round 2, and ensemble-driven DAgger (2026-10-03)
+
+**Setups** (same eval: 50 episodes × 20 s, seeds 1000–1049):
+- **DAgger×2**: DAgger×1 model flown on seeds 3000–3099 (8/100 crashed) → 194,983 PD-labelled rows (`data_x500_dagger/d2.csv.gz`); retrain on real + d1 + d2. Run `runs_x500/dagg2/data_track/10-03-26_16.35.09_vtkg`.
+- **Ensemble-driven DAgger** (the §36 recipe): ensemble6 flown on seeds 2000–2099, *the same seeds as d1*, so only the driver differs (19/100 crashed) → 180,549 rows (`d1_ens.csv.gz`). Retrained (a) one model (s0 τ0.85) and (b) all 6 seed×τ members, action-averaged. Runs `runs_x500/ensdagg/s*_t*/`.
+
+| model | DAgger data | crash /50 | survival (s) | survivor err (m) | max (m) | offline val MSE |
+|---|---|---|---|---|---|---|
+| PD expert | – | 0 | 20.0 | 0.177 | 0.51 | – |
+| base single | – | 43 | 9.6 | 0.156 | 6.89 | 0.0182 |
+| ensemble6 | – | 6 | 18.9 | 0.245 | 5.98 | – |
+| DAgger×1 single | d1 (single-driven) | 8 | 18.5 | 0.200 | 2.18 | 0.0291 |
+| **DAgger×2 single** | **d1 + d2 (single-driven)** | **1** | **19.9** | **0.176** | **1.22** | 0.0319 |
+| ens-driven DAgger, (a) single | d1_ens | 25 | 14.0 | 0.164 | 5.60 | 0.0239 |
+| ens-driven DAgger, (b) ensemble6 | d1_ens | 18 | 14.9 | 0.156 | 0.66 | 0.022–0.042 |
+
+DAgger×2 by shape: circle 0/29 (err 0.159, max 0.50), eight 1/21 (0.200). Its only crash is seed 1048 (eight) at 16.4 s.
+
+**Reading it.**
+1. **DAgger×2 = PD-level flight in the sim:** 1/50 crashes, survivor error 0.176 m vs PD's 0.177 m, max 1.22 m. Two passes of *learner-driven* DAgger take the first X500 policy from 43/50 to 1/50 crashes. This is the project lesson from §36 again: DAgger decides completion. Offline action MSE got *worse* on every pass (0.018 → 0.029 → 0.032).
+2. **Ensemble-driven DAgger is worse here, contrary to §36.** Same seeds and one pass each: single-driven gives 8 crashes, ensemble-driven gives 25 (single student) or 18 (ensemble of students). The ensemble of DAgger students is even worse than the plain ensemble (6). Explanation: the ensemble driver rarely fails (19/100), so d1_ens holds *the ensemble's* states. It has few states where the single student goes wrong, and fewer recovery-from-bad-attitude states (d1: 93 crash flights; d1_ens: 19). DAgger's guarantee is about the **learner's own** state distribution. It worked in §36 because the shape policies there shared the ensemble's failure modes; this X500 base single fails early and differently. The (b) crashes have a low max error (0.66 m), so they are sudden attitude losses (tilt limit), not drift.
+3. Comparison caveat: DAgger×2 uses 2 passes and 276k extra rows, against 1 pass and 181k rows. The fair one-pass comparison is DAgger×1 (8) vs ens-driven (a) (25). 50 episodes per row, so differences of a few crashes are noise; 8 vs 25 and 1 vs 43 are not.
+
+**Current best X500 policy:** DAgger×2 single, `runs_x500/dagg2/data_track/10-03-26_16.35.09_vtkg` (one network, ONNX-exportable as is). **Next:** the yaw sweep on this model (−94 ± 5/15/30/60°, random), then optionally DAgger×3 targeting the remaining figure-8 failure. Caveat as before: sim-to-sim only. Before hardware, it still needs SITL/real validation.
+
+### 37e. DAgger round 3 + start-heading (yaw) sweeps — X500 and soft v2 (2026-10-03)
+
+**DAgger×3.** DAgger×2 flown on seeds 4000–4099: **0/100 crashed**, so d3 has no crash/recovery flights (200,000 rows, `data_x500_dagger/d3.csv.gz`). Retrain on real + d1 + d2 + d3. Run `runs_x500/dagg3/data_track/10-03-26_17.34.01_vtkg`. ONNX exported (`policy.onnx`, PyTorch↔ONNX max err 5.2e-7).
+
+| model | crash /50 | survivor err (m) | max (m) | circle err / max | eight err / max | offline val MSE |
+|---|---|---|---|---|---|---|
+| PD expert | 0 | 0.177 | 0.51 | 0.158 / 0.29 | 0.203 / 0.51 | – |
+| DAgger×2 | 1 | 0.176 | 1.22 | 0.159 / 0.50 | 0.200 / 1.22 | 0.0319 |
+| **DAgger×3** | **0** | **0.179** | **0.64** | 0.159 / 0.33 | 0.207 / 0.64 | 0.0282 |
+
+DAgger×3 matches PD in the sim: 0 crashes, the same mean error, and a max within 0.13 m of PD. Even with no crash flights in d3, the third pass still tightened the tail (1.22 → 0.64 m). It added more coverage of normal-flight states the policy actually visits. **Current best X500 policy: DAgger×3**, `runs_x500/dagg3/data_track/10-03-26_17.34.01_vtkg/policy.onnx`.
+
+**X500 start-heading sweep** (`x500_sim.py --yaw-span S`: start yaw = −94° + U(−S, S) per episode from a separate RNG, so trajectories are identical across S; PD holds the same heading. PD: 0/50 at every S.)
+
+| yaw span | DAgger×2 crash / err / max | DAgger×3 crash / err / max |
+|---|---|---|
+| 0 | 1 / 0.176 / 1.22 | 0 / 0.179 / 0.64 |
+| ±5° | 0 / 0.187 / 1.98 | 0 / 0.179 / 0.59 |
+| ±15° | 0 / 0.194 / 1.14 | 0 / 0.183 / 0.61 |
+| ±30° | 0 / 0.214 / 1.20 | 0 / 0.191 / 0.63 |
+| ±60° | 0 / 0.264 / 2.31 | 0 / 0.206 / 0.77 |
+| ±180° (random) | 17 / 0.298 / 5.77 | 14 / 0.257 / 6.39 |
+
+Crashes in the random case by actual |offset|: DAgger×2 0/20 (<60°), 5/17 (60–120°), 12/13 (>120°); DAgger×3 0/20, 4/17, 10/13. So the X500 policy is **heading-robust within ±60°** (no crashes, error grows mildly) and fails beyond ~90°. That is the range of headings in the Gazebo data (p25–p75 −101…−84°, plus in-flight spread to the tails); DAgger data was all collected at −94°.
+
+**Soft v2 FINAL (shape project) start-heading sweep.** Did the shape policies have the same property? `runs/d2_merged/08-11-26_01.01.10_vxno`, the §36 protocol (seeds 500–509 × both × 5 shapes = 100 per heading, D=1.0), with the *drone* start heading set via a new `shape_dataset.INIT_YAW_DEG` (default 0 = unchanged; `eval_ensemble.py --init-yaw`). Track yaw stays random as always. Raw: `examples/yaw_eval/softv2_yaw*.txt`.
+
+| drone heading | traverse ≥2 laps | net laps | dist mean (m) | max (m) |
+|---|---|---|---|---|
+| 0° (data) | **100/100** | 2.7–3.2 | 0.02–0.15 | 0.50 |
+| 30° | 6/100 | 0.7–1.5 | 0.16 | 0.66 |
+| 60° | 0/100 | 0.3–0.4 | 0.33 | 0.61 |
+| 90° | 0/100 | 0.2–0.3 | 0.54 | 0.81 |
+| 135° | 0/100 | 0.3 | 0.70 | 0.91 |
+| 180° | 0/100 | 0.3 | 0.67 | 0.84 |
+| 270° | 0/100 | 0.3–0.7 | 0.42 | 0.58 |
+
+**Control:** the pure-pursuit expert at 0/30/90/180° gives byte-identical laps and error (triangle 2.91, circle 2.84), and the heading is held where set. So the hook and the controller are fine; the collapse is the policy.
+
+**Reading it.**
+1. **The earlier "yaw doesn't matter" impression came from the *track* yaw** (`start_yaw` ∈ [0, 360) is randomized in every shape dataset). The *drone* heading was always 0 (`INIT_RPY` yaw 0, held every step, §30). The quaternion in the obs therefore only ever showed yaw 0, and a 30° heading is already OOD: 100 → 6 completions.
+2. Soft v2 doesn't crash when OOD (max <0.92 m), because the PID owns attitude and the policy only commands world velocity. It just **stalls** (0.3 laps). X500 owns body rates, so the same OOD-ness becomes **crashes**. Same cause, different symptom set by the action interface.
+3. X500 tolerates ±60° and soft v2 tolerates <30°, because the Gazebo data has *some* heading spread and the shape data has none. Both policies generalize only over the headings present in their data. The structural fix for either is a **heading-invariant obs** (rotate pos_err / vel / target-vel / look-ahead into the yaw frame, drop yaw from the attitude input). Existing data can be transformed offline, so no recollection is needed. For hardware now: take off with the heading matching the data (X500 −94° ± 60°; shape policies 0°).
