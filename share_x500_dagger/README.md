@@ -15,7 +15,8 @@ dagger3/  policy.onnx  onnx_validation.json  config.json  sim_eval.json   ← �
 | 입력 `observations` | float32 `[batch, 25]` | **원시 관측**이다. 정규화가 모델 안에 포함되어 있으므로 따로 정규화하지 않는다. |
 | 출력 `actions` | float32 `[batch, 4]` | 결정론적 행동, 범위 `[-1, 1]`, 100 Hz |
 
-관측 레이아웃은 데이터셋(DATASET.md §3)과 같다.
+관측은 `data_track.csv.gz`의 `obs_0`–`obs_24`와 **완전히 같다**. 좌표 변환, lookahead 같은 추가 피처, 차원 변경을 하지 않았다.
+따라서 데이터를 수집한 환경이 내보내는 관측을 그대로 넣으면 된다. DAgger 데이터도 같은 형식으로 생성했다.
 
 | 인덱스 | 내용 | 좌표계 |
 |---|---|---|
@@ -30,7 +31,12 @@ dagger3/  policy.onnx  onnx_validation.json  config.json  sim_eval.json   ← �
 - 추력 N = `(a0 + 1) / 2 × 34.19` (호버 근처 a0 ≈ 0.16)
 - roll / pitch / yaw rate [deg/s] = `a1 × 220`, `a2 × 220`, `a3 × 200`
 
-**좌표계:** world는 NWU, body는 FLU다. PX4(NED/FRD)에 연결할 때는 위치·속도·회전에 `diag(1, −1, −1)` 변환이 필요하다(DATASET.md §3).
+**좌표계:** world는 NWU, body는 FLU다. 데이터셋 관측은 이미 이 좌표계로 변환된 값이다.
+- **데이터 수집 코드와 같은 방식으로 관측을 만드는 경우:** 추가 변환 없이 그대로 넣는다.
+- **PX4 원시 텔레메트리(NED/FRD)로 관측을 직접 조립하는 경우:** 위치·속도·회전에 `diag(1, −1, −1)` 변환을 적용한 뒤 넣는다(DATASET.md §3).
+- **행동을 PX4로 보낼 때:** body rate는 FLU 기준이므로 FRD로 바꿔서 보낸다(pitch·yaw 부호 반전). 수집 코드가 쓰던 변환을 그대로 쓰면 된다.
+
+`obs[18:22]`에는 직전 스텝에 정책이 실제로 보낸 `[-1, 1]` 행동을 넣어야 한다.
 
 ```python
 import onnxruntime as ort, numpy as np
