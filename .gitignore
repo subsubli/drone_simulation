@@ -35,3 +35,12 @@ paper_iql.md
 .onnx-deps/
 IQL-PyTorch-main/runs_x500/
 IQL-PyTorch-main/data_x500_dagger/
+
+# Local final reports and research manuscripts
+/final_report/
+*최종보고서*
+
+# Local X650 checkpoints, generated samples, and evaluation artifacts
+/IQL-PyTorch-main/runs_x650/
+/diffusion/x650_probe_run/
+/gan/x650_probe_run/

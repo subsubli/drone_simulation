@@ -1554,3 +1554,251 @@ Crashes in the random case by actual |offset|: DAgger×2 0/20 (<60°), 5/17 (60�
 1. **The earlier "yaw doesn't matter" impression came from the *track* yaw** (`start_yaw` ∈ [0, 360) is randomized in every shape dataset). The *drone* heading was always 0 (`INIT_RPY` yaw 0, held every step, §30). The quaternion in the obs therefore only ever showed yaw 0, and a 30° heading is already OOD: 100 → 6 completions.
 2. Soft v2 doesn't crash when OOD (max <0.92 m), because the PID owns attitude and the policy only commands world velocity. It just **stalls** (0.3 laps). X500 owns body rates, so the same OOD-ness becomes **crashes**. Same cause, different symptom set by the action interface.
 3. X500 tolerates ±60° and soft v2 tolerates <30°, because the Gazebo data has *some* heading spread and the shape data has none. Both policies generalize only over the headings present in their data. The structural fix for either is a **heading-invariant obs** (rotate pos_err / vel / target-vel / look-ahead into the yaw frame, drop yaw from the attitude input). Existing data can be transformed offline, so no recollection is needed. For hardware now: take off with the heading matching the data (X500 −94° ± 60°; shape policies 0°).
+
+## 38. X650 real-flight data — small Diffusion and GAN transition probes (2026-11-13)
+
+**Question.** Can small generative models reproduce the transition distribution of three real flights? These are single-seed, single-configuration probes, not evidence that augmentation resolves missing recovery-state coverage. Unlike the earlier CF2X 64-step trajectory models, both probes generate independent transitions. No IQL training, DAgger, simulator rollout, or real-flight policy evaluation was performed in this section.
+
+**Data and shared representation.** Source: `x650_real_data.zip`, SHA256 `c2ffe41669b069064ad29483da5ca0525d2a695379713e6e26434c8b2523f737`; archive member `x650_square_mdp_20261108/x650_square_mdp_20261108.npz`.
+
+| flight | speed (archive README) | transitions | use |
+|---|---|---:|---|
+| 0 | 2 m/s | 1,860 | train |
+| 1 | 2 m/s | 1,869 | train |
+| 2 | 3 m/s | 2,078 | validation |
+| total | | 5,807 | train 3,729 / validation 2,078 |
+
+- Observation16: position error3, velocity error3, velocity3, quaternion4 (wxyz), body rates3. Action4: roll/pitch/yaw rate commands in rad/s and normalized thrust. CF2X/X500 feature ordering and scales were not reused.
+- Both probes use the same flight-level split, retaining all 4,058 Mission and 1,749 RTL transitions. Takeoff/landing were not removed and raw ULogs were not reprocessed. The archive documents position/velocity at 10 Hz and reference trajectory at 5 Hz, interpolated to 50 Hz; 5,807 rows are not 5,807 independent measurements.
+- Checked finite values, within-flight `next_observations[t] == observations[t+1]`, and approximately 0.02 s spacing. These checks do not establish the physical validity of interpolation or source-topic alignment.
+- Joint vector36: `[s(16), a(4), s_next-s(16)]`, standardized using training flights only, standard-deviation floor 1e-4. Reconstruct next state by adding the generated delta to the generated state.
+- Recompute reward using the original formula: `-(||ep_next||² + 0.1||ev_next||² + 0.01||rates_cmd||²)`.
+- Save 2,048 raw generated transitions per model, **without clipping, quaternion projection, or sample rejection**. No RL episode/terminal convention has been assigned to these independent samples.
+- CPU, PyTorch 2.13.0, one thread, seed0, fixed final checkpoint at 3,000 updates. Validation did not select checkpoints. Equal update counts do not imply equal compute budgets.
+
+### 38a. Small DDPM
+
+Code: `diffusion/x650_probe.py`; artifacts: `diffusion/x650_probe_run/{model.pt,raw_generated.npz,report.json}`.
+
+| setting | value |
+|---|---|
+| denoiser | existing `transition_diffusion.Denoiser`, hidden128 × 3, SiLU |
+| parameters | 42,532 |
+| diffusion | noise prediction, T=1000, linear beta 1e-4 to 0.02 |
+| optimizer | Adam 3e-4, batch128, 3,000 updates |
+| sampling | posterior variance |
+| train / validation noise MSE, step1 | 1.001758 / 1.003833 |
+| train / validation noise MSE, step3000 | 0.226028 / 0.259172 |
+
+This is a generative-model width, not a change to an IQL policy. Noise MSE is not control error. The first nearest-neighbor calculation produced NumPy matmul warnings; distances were recomputed on the same saved samples using `torch.cdist(..., compute_mode='donot_use_mm_for_euclid_dist')`. Training and generation were not repeated.
+
+### 38b. Small GAN
+
+Code: `gan/x650_probe.py`; artifacts: `gan/x650_probe_run/{model.pt,raw_generated.npz,report.json}`. This is a separate transition MLP using the spectral-normalization/hinge-loss approach of the existing trajectory GAN.
+
+| setting | value |
+|---|---|
+| generator / discriminator | hidden128 × 3, LeakyReLU0.2; latent32 |
+| parameters, G / D | 41,892 / 37,889 |
+| discriminator regularization | spectral normalization on each Linear |
+| loss / update ratio | hinge; one D and one G update per step |
+| optimizer | both Adam 2e-4, betas(0,0.9), batch128, 3,000 updates |
+| measured training-loop time | 3.905 s, excluding load/generation/metrics |
+| final D / G loss | 1.837478 / 0.777839 |
+
+GAN losses are not comparable to DDPM noise MSE and were not used as a generation-quality score.
+
+**Generated-data diagnostics.** Position error below is the norm of the position-error feature, not error measured by executing a policy.
+
+| metric | train original | validation original | DDPM generated | GAN generated |
+|---|---:|---:|---:|---:|
+| position-error median (m) | 0.1834 | 0.1752 | 0.1655 | 0.1952 |
+| position-error p95 (m) | 0.3072 | 0.3066 | 1.4636 | 0.3637 |
+| position-error max (m) | 0.4102 | 0.5032 | 23.7585 | 0.5981 |
+| current quaternion norm, median | 1.0000 | 1.0000 | 0.8387 | 0.7291 |
+| current quaternion norm, min–max | ~1–1 | ~1–1 | 0.0170–65.9658 | 0.0389–2.7832 |
+| next quaternion norm, median | 1.0000 | 1.0000 | 0.8452 | 0.6633 |
+| thrust min–max | 0.1200–0.5862 | 0.1200–0.6164 | -15.0919–1.9557 | 0.2533–0.5221 |
+| thrust outside [0,1] | 0% | 0% | 1.7578% (36/2048) | 0% (0/2048) |
+| nearest-train standardized RMS distance, median | — | 0.4340 | 0.6693 | 0.8572 |
+| same distance, p95 | — | 0.8521 | 6.5429 | 1.4156 |
+
+Distances use the 36-dimensional joint representation standardized with training statistics. Proximity does not establish quality or dynamic consistency; distance does not establish useful novel-state coverage. GAN delta-state standard deviations across the 16 dimensions were **16.8–61.1% of the originals**; its thrust range also narrowed. This demonstrates under-representation of variation, not by itself complete mode collapse.
+
+**Reading it.** DDPM reduced validation denoising loss but generated extreme outliers and invalid attitudes/thrusts. Large position errors cannot be counted as valid recovery-state generation. GAN had less extreme position-error tails and no out-of-range thrust in this sample, but still violated quaternion constraints and compressed state changes. **Neither raw sample set was fed to IQL.** Quaternion projection or thrust clipping alone would not validate action/next-state dynamics. These short, small-model runs do not settle the general feasibility of GAN or Diffusion augmentation, and do not resolve the lack of X650 closed-loop evaluation. Both NPZs passed shape, finite-value, and reward-recomputation checks; neither represents continuous flight trajectories.
+
+Reproduce from repository root (use a fresh output directory; overwriting is refused):
+
+```bash
+/Users/hanjakp/miniconda3/envs/iql/bin/python diffusion/x650_probe.py --out diffusion/x650_probe_repeat
+/Users/hanjakp/miniconda3/envs/iql/bin/python gan/x650_probe.py --out gan/x650_probe_repeat
+```
+
+## 39. X650-only IQL128×2 ensemble6 — transfer to the X500 surrogate (2026-11-13)
+
+**Question.** Can six small IQL policies trained only on X650 logs control the X500 surrogate without DAgger? The earlier CF2X ensemble used512+LayerNorm; the earlier X500 ensemble used256×2. This is a separate128×2 experiment. Success on X500 would not establish that real X650 performance is better.
+
+Code: `IQL-PyTorch-main/train_x650.py`, `IQL-PyTorch-main/eval_x650_transfer.py`. Artifacts: `IQL-PyTorch-main/runs_x650/ensemble128_20k/`.
+
+| setting | value |
+|---|---|
+| data | same X650 archive and flight split as §38; Mission + RTL retained |
+| train / validation | flights0,1: 3,729 / flight2: 2,078 |
+| members | seed{0,1} × tau{0.85,0.90,0.95} |
+| actor, each Q, V | hidden128 × 2, ReLU, no LayerNorm |
+| policy | GaussianPolicy with tanh-bounded mean |
+| updates / batch | 20,000 per member / 256 |
+| optimizer | Adam3e-4; existing cosine actor learning-rate schedule |
+| beta / smoothness lambda | 3 / 0.05 |
+| discount / target alpha | 0.99 / 0.005 |
+| reward clipping | none |
+| saved checkpoints | 5k,10k,15k,20k; fixed20k used here |
+| measured six-member training time | 188.49 s, including intermediate validation/checkpoint writes |
+
+No generated data, X500 transitions, or DAgger were used in this section's training. CPU single thread. Updates repeatedly sample the same data; they are not newly collected transitions. Observation statistics use training flights only. Normalize actions as `(a-[0,0,0,0.46])/[1.5,1.5,1.5,0.34]`, giving physical rate bounds ±1.5rad/s and thrust0.12–0.8. Only provided terminals mask bootstrap; timeouts bootstrap from the provided next state. Original terminals are all0.
+
+**Offline fit and individual-policy rollouts.** MSE averages the four normalized action dimensions, not closed-loop errors. Rollouts use the main transfer condition defined below.
+
+| member | validation MSE @5k | validation MSE @20k | X500 failures /50 | mean survival (s) |
+|---|---:|---:|---:|---:|
+| seed0 tau0.85 | 0.012099 | 0.014662 | 50 | 2.3930 |
+| seed0 tau0.90 | 0.012099 | 0.014720 | 50 | 2.5834 |
+| seed0 tau0.95 | 0.011888 | 0.014389 | 50 | 2.4432 |
+| seed1 tau0.85 | 0.013364 | 0.015959 | 50 | 3.0360 |
+| seed1 tau0.90 | 0.012993 | 0.015617 | 50 | 2.1324 |
+| seed1 tau0.95 | 0.013136 | 0.016339 | 50 | 2.8902 |
+| final ensemble6 | — | **0.013228** | **50** | **2.8428** |
+
+Ensemble train MSE0.00009662, validation MSE0.01322758. Validation physical RMSE: roll0.19194rad/s, pitch0.21821rad/s, yaw0.13568rad/s, thrust0.028837. Every member's validation error increased from5k to20k. This is consistent with overfitting and/or between-flight/speed distribution differences, which this experiment does not isolate. Small training error did not guarantee tracking.
+
+**Transfer environment and adapter.** This uses the existing **data-identified X500 surrogate in `x500_sim.py`, not Gazebo or hardware**. Dynamics are fitted on the historical X500 training flights, excluding validation flights{2,3,4,18,20,34,35}. Held-out R²=[0.879338,0.866835,0.553894,0.713129] for three body rates and velocity.
+
+- Circle/eight paths, seeds1000–1049, maximum20s, main initial yaw−94°. X650 training used square flights, so reference paths and aircraft dynamics both differ.
+- Policy50Hz, simulator100Hz; hold each command for two steps. Policies are frozen; no learning or DAgger during evaluation. Average deterministic policy means with equal weights, then apply the common action unscale.
+- Transform NWU/FLU to NED/FRD using `C=diag(1,-1,-1)` on both frames. Convert `C R C` to wxyz with qw≥0. Build the X65016-dimensional observation using position−target and velocity−target_velocity.
+- Main thrust mapping: `T_X500=(u_X650/u_hover_X650)*(g/kT)_X500`. X650 training hover0.5160644; identified X500 hover/T_MAX0.5788274. This assumes equivalent hover-relative thrust, **not a measured X650 thrust curve**. Convert FRD rates to FLU and divide by the existing RATE_MAX.
+- Sensitivity1: initial yaw178.9091°, the circular mean of the first attitudes of training flights0/1. Sensitivity2: yaw−94° with direct thrust `T=u*T_MAX`, without hover correction. Other policies/seeds/paths unchanged.
+- Failure uses the existing `crashed()` limits: altitude below0.15m or above6m, |x| or |y| above5m, or tilt above75°. These are not necessarily contact collisions. Survival is time before such termination.
+
+| condition | failures /50 | mean survival (s) | survivor mean error (m) | all-run max error (m) |
+|---|---:|---:|---:|---:|
+| existing PD expert, default yaw | 0 | 20.0000 | 0.17686 | 0.51347 |
+| ensemble6, hover correction, default yaw | 50 | 2.8428 | N/A | 6.24969 |
+| ensemble6, hover correction, training initial yaw | 50 | 2.9990 | N/A | 6.72116 |
+| ensemble6, direct thrust, default yaw | 50 | 2.1772 | N/A | 4.65560 |
+
+Main-ensemble observations reached an absolute standardized feature value of110.13. This measures large distribution departure during rollout, not its causal priority. No policy condition triggered additional adapter-level[-1,1] command clipping; the policy's own tanh bounds are separate.
+
+**Checks and interpretation.** Coordinate round-trip on100 original states had maximum error4.32e-7. Checked body-rate signs and hover conversion; mapped hover held altitude for1s. `tanh(policy.net(x))` matched `policy(x).mean`. NumPy BLAS warnings in the existing R² matmul prompted equivalent elementwise-product/sum evaluation; values matched, and the shared simulator was not changed. All six final models and all single/ensemble/sensitivity episodes are saved in `x500_transfer_eval.json`; offline results are in `training_report.json`, member `history.json`, and `ensemble_offline_fit.json`.
+
+**The128×2,20k ensemble did not track successfully in this surrogate.** More members did not demonstrate recovery of missing coverage. This does not settle real X650 performance, larger-network feasibility, or minimum data requirements: limited data, representation, capacity, aircraft dynamics, thrust assumptions, and path differences coexist.
+
+Reproduce from `IQL-PyTorch-main` with a fresh output directory:
+
+```bash
+/Users/hanjakp/miniconda3/envs/iql/bin/python train_x650.py --out runs_x650/ensemble128_20k_repeat
+/Users/hanjakp/miniconda3/envs/iql/bin/python eval_x650_transfer.py --runs runs_x650/ensemble128_20k_repeat
+```
+
+### 39a. Ensemble of validation-best checkpoints (2026-11-13)
+
+**Why.** Every member's validation action MSE increased after5k. To check whether using the final overfit checkpoint explained failure, select each member's minimum validation-MSE checkpoint among saved5k/10k/15k/20k, breaking ties by earlier step. Selection uses X650 flight2, not X500 rollout performance. **All six selected5k**, with the individual MSE values in §39's5k column. No earlier checkpoint exists, so this is best among saved checkpoints, not best over the whole optimization trajectory. Flight2 is now a selection/validation flight, not an independent final test.
+
+Run `eval_x650_transfer.py --checkpoint best-validation --ensemble-only`. No retraining, DAgger, or generated data. Selected paths, SHA256s, steps, and MSEs are in `x500_transfer_eval_best_validation.json`; the20k result file was preserved. Same three ensemble conditions,50 seeds, circle/eight paths,20s,50Hz policy/100Hz simulator as §39. PD and individual policies were not rerun.
+
+| condition | 20k failures /50 | best5k failures /50 | 20k mean survival (s) | best5k mean survival (s) | best5k max error (m) |
+|---|---:|---:|---:|---:|---:|
+| default yaw, hover correction | 50 | 50 | 2.8428 | 2.6048 | 6.19354 |
+| training initial yaw, hover correction | 50 | 50 | 2.9990 | 2.7652 | 4.47122 |
+| default yaw, direct thrust | 50 | 50 | 2.1772 | 2.1262 | 4.48101 |
+
+No condition has a20s survivor, so survivor mean error is undefined. Failure uses the same state limits, not necessarily contact collisions.
+
+| offline ensemble metric | final20k | best5k |
+|---|---:|---:|
+| train action MSE | 0.00009662 | 0.00014211 |
+| validation action MSE | 0.01322758 | 0.01108342 |
+
+Best5k validation physical RMSE: roll0.16821rad/s, pitch0.20635rad/s, yaw0.12734rad/s, thrust0.025502. Saved in `ensemble_best_validation_offline_fit.json`.
+
+**Reading it.** Earlier checkpoints improved validation action fit but not X500 closed-loop survival. Final20k overfitting alone therefore does not explain failure; this does not rule out overfitting or establish performance before5k. Limited data, aircraft/path shifts, and interface assumptions remain. No real X650 conclusion follows. Verified each selected minimum and matching seeds/shapes/yaws for all150 episodes; syntax and whitespace checks passed, and previous results were preserved.
+
+## 40. One X500-surrogate DAgger pass with10 episodes (2026-11-13)
+
+**Method.** Drive exactly10 episodes with §39a's best5k ensemble6, then aggregate expert-labelled transitions. This is **X500-surrogate data, not real X650 data**; the retrained policy now includes X500 adaptation.
+
+Collector: `IQL-PyTorch-main/collect_x650_dagger.py`; data: `runs_x650/dagger10_data/{transitions.npz,collection.json}`. Collection seeds2000–2009 are disjoint from evaluation seeds1000–1049. Circle/eight, yaw−94°, maximum20s each, policy50Hz and dynamics100Hz. Stop at learner failure; no within-episode reset, expert rescue, or extra flights.
+
+At each learner state, clone the state and command-lag history. Invert the PD expert command into X650 body-rate and hover-relative thrust units, restrict it to the existing policy bounds (rates±1.5rad/s, thrust0.12–0.8), convert it back to X500 commands, and apply it to the clone for two substeps. **The recorded next state follows the recorded expert action**, not the learner action. Reward uses the original X650 next-state tracking/rate-command formula with no new crash penalty. Expert-clone failure sets terminal; learner failure/budget expiry without expert-clone failure sets timeout. Independent cloned transitions need not chain into the next learner observation.
+
+### Collection budget and training data
+
+| seed | path | rows | duration (s) | learner failed |
+|---|---|---:|---:|---|
+| 2000 | circle | 106 | 2.12 | yes |
+| 2001 | circle | 94 | 1.88 | yes |
+| 2002 | eight | 107 | 2.14 | yes |
+| 2003 | circle | 179 | 3.58 | yes |
+| 2004 | circle | 126 | 2.52 | yes |
+| 2005 | circle | 121 | 2.42 | yes |
+| 2006 | eight | 98 | 1.96 | yes |
+| 2007 | circle | 103 | 2.06 | yes |
+| 2008 | eight | 120 | 2.40 | yes |
+| 2009 | eight | 102 | 2.04 | yes |
+| total | 6 circle /4 eight | **1,156** | **23.12** | **10/10** |
+
+| quantity | value |
+|---|---:|
+| theoretical budget if all flights lasted20s | 10,000 rows |
+| actual mean duration | 2.312 s |
+| expert labels restricted by policy bounds | 729/1,156 (63.06%) |
+| expert-clone terminals / timeouts | 10 /0 |
+| original X650 training rows | 3,729 |
+| added X500 DAgger rows | 1,156 |
+| combined training rows | **4,885** |
+| DAgger share of training rows | **23.66%** |
+| unchanged X650 validation rows | 2,078 |
+
+Early termination made the added dataset smaller than the5,807-row original archive. Restricting63.06% of expert labels may weaken recovery relative to unrestricted PD; next states were recomputed using those restricted labels, so this is not an action/transition mismatch.
+
+**Retraining.** `train_x650.py --extra-npz` fits observation normalization on combined training rows and trains six policies **from scratch**, not by warm start. Same128×2 architecture, seeds/tau grid,20k updates, beta3, smoothness0.05, gamma0.99, batch256, lr3e-4 and other settings as §39. Uniform sampling from the concatenated dataset, no special DAgger oversampling and no synthetic data. Measured training time188.70s. Artifacts: `runs_x650/dagger10_ensemble128_20k/`. Evaluate both final20k and X650-validation-best ensembles separately; X500 results do not choose checkpoints.
+
+| member | validation-best saved step |
+|---|---:|
+| seed0 tau0.85 | 5,000 |
+| seed0 tau0.90 | 10,000 |
+| seed0 tau0.95 | 10,000 |
+| seed1 tau0.85 | 5,000 |
+| seed1 tau0.90 | 5,000 |
+| seed1 tau0.95 | 5,000 |
+
+### Closed-loop results
+
+Same surrogate,50 evaluation seeds and three conditions as §39/39a. Policies frozen during evaluation. No additional DAgger rounds. PD baseline is the previously measured §39 result (0/50 failures,20s, mean error0.17686m), not a new run.
+
+| condition | before, best5k failures /50 | after, validation-best failures /50 | after, final20k failures /50 | before mean survival (s) | after validation-best (s) | after final20k (s) |
+|---|---:|---:|---:|---:|---:|---:|
+| default yaw, hover correction | 50 | 50 | 50 | 2.6048 | **5.2584** | **5.8326** |
+| training initial yaw, hover correction | 50 | 50 | 50 | 2.7652 | 2.1244 | 2.2576 |
+| default yaw, direct thrust | 50 | 50 | 50 | 2.1262 | 5.5516 | 5.5966 |
+
+| condition | after validation-best all-run max error (m) | after final20k all-run max error (m) |
+|---|---:|---:|
+| default yaw, hover correction | 6.62305 | 6.59756 |
+| training initial yaw, hover correction | 4.83903 | 4.54622 |
+| default yaw, direct thrust | 6.78494 | 5.88861 |
+
+Every condition still has zero20s survivors; survivor mean error is undefined. Under the main condition, mean per-episode error was0.50192m (validation-best) and0.58241m (final20k). These averages cover different, failure-truncated durations and should not be read as equal-horizon tracking comparisons.
+
+**Reading it.** Ten learner-driven episodes produced only1,156 labelled transitions. After aggregation, main-condition survival increased from2.60s to5.26s with validation-selected checkpoints, but failures remained50/50. Final20k reached5.83s, also50/50. Training-initial-heading performance did not improve. This single pass improved survival in the main X500 condition but did not establish stable tracking. It does not demonstrate real X650 improvement, nor separate the effects of new data, changed normalization, and retraining. Expert-action bounds and short failing collection trajectories remain limitations.
+
+**Checks and provenance.** Verified10 episodes, counts,50Hz timestamps, finite values, and recomputed rewards; action inverse/forward mapping error was at most1.11e-16. Dataset SHA256 is stored in both collection metadata and training config. Original data and all earlier results were preserved. New per-episode results and selected-checkpoint paths/hashes are in `x500_transfer_eval_best_validation.json` and `x500_transfer_eval.json` under the new run directory. Final validation checks cover all six models, saved checkpoints, and matched evaluation seeds/shapes/yaws.
+
+Commands from `IQL-PyTorch-main` (collector uses fixed input/output paths and refuses to overwrite; archive existing local outputs before a deliberate repeat):
+
+```bash
+/Users/hanjakp/miniconda3/envs/iql/bin/python collect_x650_dagger.py
+/Users/hanjakp/miniconda3/envs/iql/bin/python train_x650.py --out runs_x650/dagger10_ensemble128_20k --extra-npz runs_x650/dagger10_data/transitions.npz
+/Users/hanjakp/miniconda3/envs/iql/bin/python eval_x650_transfer.py --runs runs_x650/dagger10_ensemble128_20k --checkpoint best-validation --ensemble-only
+/Users/hanjakp/miniconda3/envs/iql/bin/python eval_x650_transfer.py --runs runs_x650/dagger10_ensemble128_20k --checkpoint final --ensemble-only
+```
