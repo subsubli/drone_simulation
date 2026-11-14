@@ -1854,3 +1854,33 @@ python reeval_x500_progress.py
 python eval_x650_transfer.py --checkpoint best-validation --ensemble-only --out runs_x650/ensemble128_20k/net_laps_best_20261115.json
 python eval_x650_transfer.py --runs runs_x650/dagger10_ensemble128_20k --checkpoint best-validation --ensemble-only --out runs_x650/dagger10_ensemble128_20k/net_laps_best_20261115.json
 ```
+
+### 41a. Completion threshold: two-thirds of the PD mean (2026-11-15)
+
+**Requested criterion.** Completion is final signed `net_laps >= (2/3) * mean(PD net_laps)`. The reference is all50 PD episodes from §41, pooled across circle/eight. PD mean2.546556196866564 gives a fixed threshold **1.6977041312443761 net laps**. Comparisons use full precision, not rounded table values. This replaces the proposed fixed2.0-lap criterion; it is not a per-seed or per-shape threshold. The same pooled reference is used for all listed transfer sensitivity conditions.
+
+**Aggregation, not new flights.** Read the saved600 episode records from §41, with no retraining, simulator rerun, or checkpoint selection. The criterion was specified after the earlier evaluations and is documented here as a post-hoc progress criterion. Periods vary across seeds, so a common threshold does not normalize each episode to its own expert progress.
+
+**Survival is separate.** No additional non-crash requirement is imposed. An episode whose final recorded progress meets the threshold but terminates at a state limit counts as progress-complete; report that overlap explicitly rather than treating completion as safe20s flight. The criterion uses final net progress, not the maximum progress reached earlier.
+
+| X500 policy | progress-complete /50 | completion rate | complete and survived20s | complete but failed |
+|---|---:|---:|---:|---:|
+| PD | 50/50 | 100% | 50 | 0 |
+| base | 16/50 | 32% | 7 | 9 |
+| ensemble6 | 44/50 | 88% | 44 | 0 |
+| DAgger1 | 40/50 | 80% | 40 | 0 |
+| DAgger2 | 50/50 | 100% | 49 | 1 |
+| DAgger3 | 50/50 | 100% | 50 | 0 |
+
+| X650-format policy training | condition | progress-complete /50 | completion rate |
+|---|---|---:|---:|
+| X650 only | ensemble6 | 0/50 | 0% |
+| X650 only | ensemble6_training_heading | 0/50 | 0% |
+| X650 only | ensemble6_direct_thrust | 0/50 | 0% |
+| +10-episode X500 DAgger | ensemble6 | 0/50 | 0% |
+| +10-episode X500 DAgger | ensemble6_training_heading | 0/50 | 0% |
+| +10-episode X500 DAgger | ensemble6_direct_thrust | 0/50 | 0% |
+
+DAgger×1 completes40/50 (80%); DAgger×2 and×3 both complete50/50 (100%) under this progress rule. DAgger×2 still has one failure after sufficient progress, whereas×3 has none. X650-format ensembles remain0/50 before and after the10-episode DAgger pass in all three conditions.
+
+**Artifacts.** `IQL-PyTorch-main/summarize_completion.py` computes the reference, verifies matching seeds/shapes/target budgets, and saves counts, per-shape breakdowns, per-episode flags and input SHA256s to `runs_x500/completion_20261115.json`. Original rollout files are unchanged. Reproduce from `IQL-PyTorch-main` with `python summarize_completion.py --out runs_x500/completion_repeat.json`. The script refuses to overwrite existing output. Threshold equality, zero/negative progress, and completion/failure overlap were checked.
