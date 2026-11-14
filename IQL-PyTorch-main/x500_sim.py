@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+from path_progress import PathProgress
 
 DT, LAGS, T_LAG = .01, 6, 2
 YAW_DATA = np.deg2rad(-94.)  # data median heading (PX4 start yaw); yaw 0 is OOD for the policy
@@ -193,6 +194,7 @@ def rollout(model, act_fn, seed, seconds, log=None, flight=0):
     at, shape, per = trajectory(rng)
     p0, v0 = at(0.)
     sim = X500Sim(model, p0, v0)
+    progress = PathProgress(at, per, p0)
     errs = []
     steps = int(seconds/DT)
     for k in range(steps):
@@ -203,12 +205,15 @@ def rollout(model, act_fn, seed, seconds, log=None, flight=0):
             nxt = twin.obs(*at((k+1)*DT)); dead = twin.crashed()
             log.append(np.r_[ob, lab, reward(ob, lab, dead), nxt, dead, k == steps-1, flight, k*DT])
         sim.step(act_fn(sim, tgt, tvel))
+        progress.update(sim.p)
         errs.append(np.linalg.norm(at((k+1)*DT)[0]-sim.p))
         if sim.crashed():
             if log is not None and not log[-1][55]:
                 log[-1][56] = 1.  # policy crashed here, label's twin did not: cut as timeout, not terminal
-            return dict(seed=seed, shape=shape, crashed=True, t=(k+1)*DT, err=float(np.mean(errs)), max=float(np.max(errs)))
-    return dict(seed=seed, shape=shape, crashed=False, t=seconds, err=float(np.mean(errs)), max=float(np.max(errs)))
+            return dict(seed=seed, shape=shape, crashed=True, t=(k+1)*DT, err=float(np.mean(errs)), max=float(np.max(errs)),
+                        **progress.metrics((k+1)*DT, seconds, per))
+    return dict(seed=seed, shape=shape, crashed=False, t=seconds, err=float(np.mean(errs)), max=float(np.max(errs)),
+                **progress.metrics(seconds, seconds, per))
 
 
 def summary(name, rs):
@@ -220,7 +225,9 @@ def summary(name, rs):
         print(f"{name:7s} {shape:6s} n={len(s):3d} crash={len(s)-len(ok):3d}  "
               f"mean_err={np.mean([r['err'] for r in s]):.3f} m  "
               f"survivor_err={np.mean([r['err'] for r in ok]) if ok else float('nan'):.3f} m  "
-              f"max={np.max([r['max'] for r in s]):.2f} m  mean_t={np.mean([r['t'] for r in s]):.1f} s")
+              f"max={np.max([r['max'] for r in s]):.2f} m  mean_t={np.mean([r['t'] for r in s]):.1f} s  "
+              f"net_laps={np.mean([r['net_laps'] for r in s]):.3f}  "
+              f"budget_progress={np.mean([r['progress_ratio_budget'] for r in s]):.3f}")
 
 
 def main():

@@ -74,7 +74,11 @@ def aggregate(rows):
     return dict(episodes=len(rows),crashes=len(rows)-len(ok),mean_seconds=float(np.mean([r['t'] for r in rows])),
                 survivor_mean_error=float(np.mean([r['err'] for r in ok])) if ok else None,
                 all_episode_mean_error=float(np.mean([r['err'] for r in rows])),
-                max_error=float(max(r['max'] for r in rows)))
+                max_error=float(max(r['max'] for r in rows)),
+                mean_net_laps=float(np.mean([r['net_laps'] for r in rows])),
+                mean_target_laps_budget=float(np.mean([r['target_laps_budget'] for r in rows])),
+                mean_progress_ratio_budget=float(np.mean([r['progress_ratio_budget'] for r in rows])),
+                projection_rejections=sum(r['progress_projection_rejections'] for r in rows))
 
 
 def heldout_r2(model,t,o,a,no,val):

@@ -1802,3 +1802,55 @@ Commands from `IQL-PyTorch-main` (collector uses fixed input/output paths and re
 /Users/hanjakp/miniconda3/envs/iql/bin/python eval_x650_transfer.py --runs runs_x650/dagger10_ensemble128_20k --checkpoint best-validation --ensemble-only
 /Users/hanjakp/miniconda3/envs/iql/bin/python eval_x650_transfer.py --runs runs_x650/dagger10_ensemble128_20k --checkpoint final --ensemble-only
 ```
+
+## 41. X500 geometric net laps alongside survival (2026-11-15)
+
+**Why.** The previous X500 termination rule checked altitude, position bounds, and tilt, not path completion. A stationary aircraft could survive20s without completing the path. Add actual geometric progress; keep survival and tracking error as separate metrics. No training, DAgger collection, or checkpoint reselection in this section.
+
+**Definition.** `path_progress.PathProgress` discretizes one reference cycle into2,048 ordered3D line segments. Starting at the known path start, each measured aircraft position is projected onto a local neighborhood of the previous unwrapped path index. Signed index change divided by2,048 gives `net_laps`; forward along the reference is positive and reverse travel cancels progress. Unlike the CF2X helper, this does not take the absolute value of total signed progress. The target clock is not used to advance the aircraft index.
+
+The search radius is `min(N/8, max(8, ceil(2*position_displacement/min_segment_length)+2))`. This keeps the other branch of a figure-eight crossing outside a local update. Ties favor the phase closest to the previous phase. Identical positions do not update progress. A closest projection on the search boundary is rejected rather than allowing repeated artificial advancement; the rejection count is saved. Large off-path excursions can make projection ambiguous, so results with rejections require caution and net laps must be read with tracking errors, not as a new stand-alone completion verdict.
+
+Each episode now saves `net_laps`, `target_laps_elapsed=t/period`, `target_laps_budget=20/period`, the corresponding signed progress ratios, and `progress_projection_rejections`. The budget ratio penalizes early failure rather than treating partial survival as a full trial. Ratios are not clipped to[0,1]. Table percentages average per-episode ratios, not ratios of group means. Existing failure criteria and controller behavior remain unchanged.
+
+**Checks.** `test_path_progress.py` checks circle/figure-eight forward and reverse travel in both path orientations, stationary aircraft, a pause at the figure-eight crossing, and cancellation of out-and-back motion. All tests passed. X650 before/after-DAgger re-evaluations preserved every prior seed, shape, failure flag, time, mean error and maximum error exactly across300 episodes. Earlier result files were not overwritten.
+
+### Historical X500 policies
+
+Re-run saved policies with the existing identified surrogate: seeds1000–1049,20s,100Hz,initial yaw−94°,same dynamics fit and paths. Not Gazebo or hardware. Mean target budget is2.55978 laps.
+
+| policy | failures /50 | mean survival (s) | mean net laps | mean budget progress | survivor error (m) | rejected projections |
+|---|---:|---:|---:|---:|---:|---:|
+| PD | 0 | 20.0000 | 2.54656 | 99.49% | 0.17686 | 0 |
+| base | 43 | 9.6150 | 1.12617 | 45.50% | 0.15573 | 496 |
+| ensemble6 | 6 | 18.9262 | 2.29177 | 91.00% | 0.24460 | 1387 |
+| DAgger1 | 8 | 18.4616 | 2.24734 | 88.61% | 0.20043 | 2150 |
+| DAgger2 | 1 | 19.9270 | 2.53161 | 99.00% | 0.17579 | 79 |
+| DAgger3 | 0 | 20.0000 | 2.54615 | 99.48% | 0.17880 | 0 |
+
+DAgger×3 reaches2.54615 net laps,99.48% of its episode-specific20s target budgets on average, with0 rejected projections. Together with0/50 failures and0.17880m mean tracking error, this supports actual path traversal rather than stationary survival. It does not mean that every run completed an exactly prescribed integer number of laps.
+
+### X650-policy transfer, before/after10-episode DAgger
+
+Use the already selected validation-best ensembles from §39a and §40, with unchanged adapters and50Hz policy output. These are X650-format policies evaluated in the X500 surrogate. Only these selected ensembles were rerun here, not the alternative final20k ensembles.
+
+| training | condition | failures /50 | mean survival (s) | mean net laps | mean budget progress | rejected projections |
+|---|---|---:|---:|---:|---:|---:|
+| X650 only | ensemble6 | 50 | 2.6048 | 0.21519 | 8.47% | 1649 |
+| X650 only | ensemble6_training_heading | 50 | 2.7652 | 0.15985 | 6.49% | 1614 |
+| X650 only | ensemble6_direct_thrust | 50 | 2.1262 | 0.11280 | 4.35% | 237 |
+| +10-episode X500 DAgger | ensemble6 | 50 | 5.2584 | 0.54672 | 21.67% | 542 |
+| +10-episode X500 DAgger | ensemble6_training_heading | 50 | 2.1244 | 0.15666 | 6.17% | 0 |
+| +10-episode X500 DAgger | ensemble6_direct_thrust | 50 | 5.5516 | 0.50467 | 19.87% | 1869 |
+
+Main-condition net laps increase0.21519→0.54672 and budget progress8.47%→21.67% after the small DAgger pass. Thus survival improvement includes increased path progress, but both still fail50/50 and fall far short of the full20s target. Projection rejections in these poorly tracking policies are reported explicitly; no claim of accurate recovery dynamics or real X650 performance follows.
+
+**Artifacts and reproduction.** New metrics are part of `x500_sim.rollout`, its printed summary, and `eval_x650_transfer.aggregate`. Historical X500 results, per-shape summaries, and checkpoint hashes: `IQL-PyTorch-main/runs_x500/net_laps_20261115.json`. X650 results: `runs_x650/{ensemble128_20k,dagger10_ensemble128_20k}/net_laps_best_20261115.json`. These are fresh simulator evaluations, not metrics inferred from old survival-only records. Raw results remain local under the existing ignore rules.
+
+```bash
+# From IQL-PyTorch-main; output paths must not already exist.
+python -m unittest test_path_progress -v
+python reeval_x500_progress.py
+python eval_x650_transfer.py --checkpoint best-validation --ensemble-only --out runs_x650/ensemble128_20k/net_laps_best_20261115.json
+python eval_x650_transfer.py --runs runs_x650/dagger10_ensemble128_20k --checkpoint best-validation --ensemble-only --out runs_x650/dagger10_ensemble128_20k/net_laps_best_20261115.json
+```
